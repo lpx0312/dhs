@@ -101,6 +101,14 @@ CGO_ENABLED=0 GOOS=linux go build  # 交叉编译
 
 测试全部基于 `httptest`，不依赖真实 Docker Hub 网络，可离线重复运行。
 
+## 发布
+
+支持两种发布方式：
+- **手动发布**：本地编译 + tea CLI 上传 → [发布指南](docs/release-guide.md)
+- **自动流水线**：推送 tag 触发 Gitea Actions 自动编译多平台并发布 Release → [发布指南 - 自动流水线](docs/release-guide.md#二自动流水线gitea-actions)
+
+Release 下载页：`http://192.168.0.180:9000/study/dhs/releases`
+
 ## 项目结构
 
 ```
@@ -110,6 +118,10 @@ dhs/
 │   ├── root.go              # 根命令 + 持久化 flag + 共享 helper
 │   ├── search.go            # dhs search
 │   └── tags.go              # dhs tags（含 --arch/--gen-pull）
+├── .gitea/workflows/        # Gitea Actions 流水线配置
+│   └── release.yml          # 自动构建 + 发布
+├── docs/
+│   └── release-guide.md     # 发布指南（手动 + 自动）
 └── internal/
     ├── config/              # 配置加载与代理合并
     ├── dockerhub/           # API 客户端（分页、架构解析）
