@@ -1,0 +1,62 @@
+name: Build and Release
+
+# 当推送 v 开头的 tag 时触发（如 v0.1.0, v0.2.0）
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 检出代码
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. 安装 Go（自动读取 go.mod 中的版本）
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      # 3. 多平台交叉编译
+      - name: Cross-compile
+        run: |
+          mkdir -p dist
+
+          GOOS=linux   GOARCH=amd64  go build -ldflags="-s -w" -o dist/dhs-linux-amd64   .
+          GOOS=linux   GOARCH=arm64  go build -ldflags="-s -w" -o dist/dhs-linux-arm64   .
+          GOOS=windows GOARCH=amd64  go build -ldflags="-s -w" -o dist/dhs-windows-amd64.exe .
+          GOOS=darwin  GOARCH=amd64  go build -ldflags="-s -w" -o dist/dhs-darwin-amd64  .
+          GOOS=darwin  GOARCH=arm64  go build -ldflags="-s -w" -o dist/dhs-darwin-arm64  .
+
+          echo "=== Build complete ==="
+          ls -lh dist/
+
+      # 4. 创建 Release 并上传二进制
+      - name: Create Release
+        uses: https://gitea.com/actions/gitea-release-action@v1
+        with:
+          name: "${{ gitea.ref_name }}"
+          body: |
+            ## ${{ gitea.ref_name }}
+
+            自动构建版本，支持以下平台：
+            - Windows 64位
+            - Linux 64位 / ARM64
+            - macOS Intel / Apple Silicon
+
+            ### 安装方法
+            ```bash
+            # Linux/macOS
+            chmod +x dhs-* && mv dhs-linux-amd64 /usr/local/bin/dhs
+            ```
+          files: |
+            dist/dhs-linux-amd64
+            dist/dhs-linux-arm64
+            dist/dhs-windows-amd64.exe
+            dist/dhs-darwin-amd64
+            dist/dhs-darwin-arm64
+          draft: false
+          prerelease: false
