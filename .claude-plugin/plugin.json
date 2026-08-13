@@ -8,6 +8,7 @@
   },
   "repository": "https://github.com/lpx0312/dhs",
   "license": "MIT",
+  "skills": "skills",
   "keywords": [
     "docker",
     "docker-hub",
