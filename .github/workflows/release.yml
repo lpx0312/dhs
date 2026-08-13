@@ -23,12 +23,16 @@ jobs:
         with:
           go-version-file: 'go.mod'
 
-      # 3. 交叉编译 linux/amd64 + linux/arm64（纯静态，无 C 依赖）
-      - name: Cross-compile (linux/amd64 + linux/arm64)
+      # 3. 多平台交叉编译（纯静态，无 C 依赖）
+      - name: Cross-compile (linux / windows / darwin)
         run: |
           mkdir -p dist
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/dhs-linux-amd64 .
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/dhs-linux-arm64 .
+          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -ldflags="-s -w" -o dist/dhs-linux-amd64     .
+          CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 go build -ldflags="-s -w" -o dist/dhs-linux-arm64     .
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/dhs-windows-amd64.exe .
+          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="-s -w" -o dist/dhs-windows-arm64.exe .
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build -ldflags="-s -w" -o dist/dhs-darwin-amd64    .
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o dist/dhs-darwin-arm64    .
           echo "=== Build complete ==="
           ls -lh dist/
 
@@ -40,3 +44,7 @@ jobs:
           files: |
             dist/dhs-linux-amd64
             dist/dhs-linux-arm64
+            dist/dhs-windows-amd64.exe
+            dist/dhs-windows-arm64.exe
+            dist/dhs-darwin-amd64
+            dist/dhs-darwin-arm64
