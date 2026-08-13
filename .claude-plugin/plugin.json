@@ -1,0 +1,19 @@
+{
+  "name": "dhs",
+  "version": "1.0.0",
+  "description": "Find container images on Docker Hub, browse an image's tags, filter by CPU architecture (amd64/arm64/arm), and generate ready-to-paste docker pull commands.",
+  "author": {
+    "name": "lpx0312",
+    "url": "https://github.com/lpx0312"
+  },
+  "repository": "https://github.com/lpx0312/dhs",
+  "license": "MIT",
+  "keywords": [
+    "docker",
+    "docker-hub",
+    "containers",
+    "images",
+    "cli",
+    "skills"
+  ]
+}

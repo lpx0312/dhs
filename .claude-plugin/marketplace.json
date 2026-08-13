@@ -1,0 +1,15 @@
+{
+  "name": "dhs",
+  "owner": {
+    "name": "lpx0312",
+    "url": "https://github.com/lpx0312"
+  },
+  "plugins": [
+    {
+      "name": "dhs",
+      "source": "./",
+      "description": "Docker Hub image discovery skill for Claude Code",
+      "version": "1.0.0"
+    }
+  ]
+}

@@ -7,6 +7,46 @@
 - **`search`** — 按关键字搜索 Docker Hub 镜像仓库（名称、star 数、拉取数、官方标记、描述）
 - **`tags`** — 查询镜像的 tag 列表，支持排序、过滤、架构筛选、生成 `docker pull` 命令、导出 Markdown 文件
 
+## 作为 Claude Code 插件市场安装
+
+本仓库同时是一个 **Claude Code 插件市场**（组织方式参考 [kepano/obsidian-skills](https://github.com/kepano/obsidian-skills)），将 `dhs` 技能以 Skill 形式提供给 Claude 使用。
+
+### Marketplace（推荐）
+
+在 Claude Code 中执行：
+
+```
+/plugin marketplace add lpx0312/dhs
+/plugin install dhs@dhs
+```
+
+### npx skills
+
+```bash
+npx skills add git@github.com:lpx0312/dhs.git
+```
+
+### 手动安装
+
+将 `skills/dhs/` 目录复制到 Claude 的 skills 目录：
+
+- **Claude Code**：`~/.claude/skills/dhs/`
+- **Claude Desktop（项目级）**：`.claude/skills/dhs/`
+
+### 市场结构
+
+```
+dhs/
+├── .claude-plugin/
+│   ├── marketplace.json      # 市场清单（Claude Code 识别入口）
+│   └── plugin.json           # 插件清单（名称/描述/作者）
+└── skills/
+    └── dhs/
+        └── SKILL.md          # dhs 技能定义
+```
+
+> 安装后，在对话中直接说"帮我搜索一个 mysql 镜像"即可自动调用 dhs 技能。
+
 ## 安装
 
 ```bash
@@ -158,6 +198,9 @@ dhs/
 │   └── release.yml          # Gitea 自动构建 + 发布（多平台）
 ├── .github/workflows/       # GitHub Actions 流水线
 │   └── release.yml          # GitHub 自动构建 + 发布（linux/amd64+arm64）
+├── .claude-plugin/          # Claude Code 插件市场清单
+│   ├── marketplace.json     # 市场清单
+│   └── plugin.json          # 插件清单
 ├── docs/
 │   └── release-guide.md     # 发布指南（手动 + 自动）
 ├── skills/
