@@ -16,7 +16,7 @@ Assume `dhs` is already on `PATH` and callable directly. (If a run reports "comm
 
 ## Proxy setup — required before any dhs call
 
-Docker Hub is only reachable through a proxy on this network, so **every `dhs` command must carry the proxy**. The proxy lives in the `DOCKERHUB_PROXY` environment variable (default value `http://192.168.0.225:7890`). The `dhs` binary does not read `DOCKERHUB_PROXY` directly — the skill reads it and forwards it via the `--proxy` flag.
+Docker Hub is only reachable through a proxy on this network, so **every `dhs` command must carry the proxy**. The proxy lives in the `DOCKERHUB_PROXY` environment variable (default value `http://192.168.0.225:7897`). The `dhs` binary does not read `DOCKERHUB_PROXY` directly — the skill reads it and forwards it via the `--proxy` flag.
 
 Before the first `dhs` command in a task, check that `DOCKERHUB_PROXY` is set, and set it if it is not:
 
@@ -25,7 +25,7 @@ Before the first `dhs` command in a task, check that `DOCKERHUB_PROXY` is set, a
 echo "${DOCKERHUB_PROXY:-<not set>}"
 
 # 2. If the line above printed <not set>, set it for this session:
-export DOCKERHUB_PROXY=http://192.168.0.225:7890
+export DOCKERHUB_PROXY=http://192.168.0.225:7897
 ```
 
 If you had to set it, tell the user, and suggest making it permanent by adding that `export` line to their shell profile (`~/.bashrc`, `~/.zshrc`, or the PowerShell `$PROFILE`). Once it is in the profile, every new shell — and every Bash call here — picks it up automatically.
@@ -33,7 +33,7 @@ If you had to set it, tell the user, and suggest making it permanent by adding t
 Environment variables do not carry between separate Bash calls, so when in doubt pass the proxy with a built-in default. This form works whether or not the guard above just ran, in a single self-contained call:
 
 ```bash
-dhs --proxy "${DOCKERHUB_PROXY:-http://192.168.0.225:7890}" search nginx
+dhs --proxy "${DOCKERHUB_PROXY:-http://192.168.0.225:7897}" search nginx
 ```
 
 The examples below use the shorter `--proxy "$DOCKERHUB_PROXY"` form, which is fine once the variable is confirmed set (ideally in the profile so it persists).
@@ -112,7 +112,7 @@ dhs --proxy "$DOCKERHUB_PROXY" tags python --filter slim --arch arm64 --gen-pull
 
 ## If a command still fails after setting the proxy
 
-With `DOCKERHUB_PROXY` set, the connection should succeed. If a command still times out or is refused, the proxy itself is likely wrong or down — confirm the address with the user rather than guessing a different one, and check that the proxy host (`192.168.0.225:7890`) is reachable.
+With `DOCKERHUB_PROXY` set, the connection should succeed. If a command still times out or is refused, the proxy itself is likely wrong or down — confirm the address with the user rather than guessing a different one, and check that the proxy host (`192.168.0.225:7897`) is reachable.
 
 ## Quick flag reference
 

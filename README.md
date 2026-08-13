@@ -55,7 +55,7 @@ dhs tags nginx --arch amd64,arm64 --gen-pull -o nginx-tags.md
 示例：
 
 ```yaml
-proxy: "http://192.168.0.225:7890"
+proxy: "http://192.168.0.225:7897"
 no_color: false
 ```
 
