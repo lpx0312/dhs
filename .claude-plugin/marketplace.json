@@ -8,8 +8,8 @@
     {
       "name": "dhs",
       "source": "./",
-      "description": "Docker Hub image discovery skill for Claude Code",
-      "version": "1.0.0"
+      "description": "Docker Hub 镜像查询 skill（dhs CLI）",
+      "version": "1.1.0"
     }
   ]
 }

@@ -1,124 +1,172 @@
 ---
 name: dhs
-description: Find container images on Docker Hub, browse an image's tags, filter by CPU architecture (amd64/arm64/arm), and generate ready-to-paste `docker pull` commands — all through the `dhs` CLI. Use this whenever the user wants to discover or select a Docker image: searching by keyword, looking up an image's tags or versions, finding images for a specific architecture, or getting pull commands. Trigger on requests like "find a redis image", "what tags does nginx have", "I need an arm64 postgres image", "give me the docker pull command for alpine", "search docker hub for X" — even when Docker Hub is not named explicitly. This skill is only for *discovering* images; do not use it for building, pushing, or running containers.
+description: >-
+  使用 dhs CLI 查询 Docker Hub：按关键词搜索镜像仓库、浏览镜像的全部 Tag（版本）、
+  按 CPU 架构（amd64/arm64/arm）过滤 Tag、生成可直接粘贴的 `docker pull` 命令、
+  导出 Markdown 结果。
+
+  触发场景：用户想找/挑选 Docker 镜像、问"某镜像有哪些 Tag/版本"、需要特定架构
+  （如 ARM 服务器、Apple Silicon、树莓派）的镜像、要 docker pull 命令、
+  说"在 Docker Hub 上搜 X"——即使没明说 Docker Hub 也应触发。
+
+  不适用：镜像构建与 Dockerfile 编写、推送镜像、运行容器；
+  把镜像同步到 Harbor / 国内仓库用 irs-sync（dsync），本 skill 只负责在 Docker Hub 上"找镜像"。
 ---
 
-# dhs — Docker Hub Image Discovery
+# dhs — Docker Hub 镜像查询
 
-`dhs` is a small CLI that talks to the Docker Hub API. It has exactly two jobs:
+`dhs` 是一个查询 Docker Hub API 的小型 CLI，核心只有两个子命令：
 
-- `dhs search <keyword>` — find image *repositories* by keyword
-- `dhs tags <image>` — list an image's *tags*, filter by architecture, and emit `docker pull` commands
+- `dhs search <关键词>` — 按关键词搜索镜像*仓库*
+- `dhs tags <镜像>` — 列出镜像的 *Tag*、按架构过滤、生成 `docker pull` 命令
 
-Most real requests are a two-step hop: **search** to pick the right repository, then **tags** to pick a version and get the pull command. Run `dhs` via Bash and read the formatted tables it prints.
+绝大多数请求是两步跳：先 **search** 选定仓库，再 **tags** 选定版本并拿拉取命令。通过 Bash 运行 dhs，读取它输出的格式化表格。
 
-Assume `dhs` is already on `PATH` and callable directly. (If a run reports "command not found", the user can build it from the project root with `go build -o dhs .` and add it to `PATH` — but only do this if asked.)
+## 前置检查与安装
 
-## Proxy setup — required before any dhs call
-
-Docker Hub is only reachable through a proxy on this network, so **every `dhs` command must carry the proxy**. The proxy lives in the `DOCKERHUB_PROXY` environment variable (default value `http://192.168.0.225:7897`). The `dhs` binary does not read `DOCKERHUB_PROXY` directly — the skill reads it and forwards it via the `--proxy` flag.
-
-Before the first `dhs` command in a task, check that `DOCKERHUB_PROXY` is set, and set it if it is not:
+**执行任何 dhs 命令前，先确认二进制可用**：
 
 ```bash
-# 1. Check whether it is already set
-echo "${DOCKERHUB_PROXY:-<not set>}"
-
-# 2. If the line above printed <not set>, set it for this session:
-export DOCKERHUB_PROXY=http://192.168.0.225:7897
+command -v dhs
 ```
 
-If you had to set it, tell the user, and suggest making it permanent by adding that `export` line to their shell profile (`~/.bashrc`, `~/.zshrc`, or the PowerShell `$PROFILE`). Once it is in the profile, every new shell — and every Bash call here — picks it up automatically.
+没有时**必须先安装，不要直接执行 dhs**。按本机平台下载 Release 预编译二进制（linux/darwin/windows × amd64/arm64，替换文件名）：
 
-Environment variables do not carry between separate Bash calls, so when in doubt pass the proxy with a built-in default. This form works whether or not the guard above just ran, in a single self-contained call:
+```bash
+# 例：linux amd64；darwin 用 dhs-darwin-amd64 / dhs-darwin-arm64，ARM 平台换 arm64
+curl -fLo dhs https://github.com/lpx0312/dhs/releases/latest/download/dhs-linux-amd64
+sudo install -m 0755 dhs /usr/local/bin/dhs
+
+# GitHub 直连超时/失败时，在原 URL 前加代理前缀 https://gh.1102345.xyz/ 重试：
+curl -fLo dhs https://gh.1102345.xyz/https://github.com/lpx0312/dhs/releases/latest/download/dhs-linux-amd64
+```
+
+Windows（PowerShell）：
+
+```powershell
+curl.exe -fLo dhs.exe https://github.com/lpx0312/dhs/releases/latest/download/dhs-windows-amd64.exe
+# 然后把 dhs.exe 所在目录加入 PATH
+```
+
+安装后用 `dhs --help` 验证（注意：dhs **没有 `--version` 参数**，能打印用法即安装成功）。也可以从项目根源码编译：`go build -o dhs .` 后把二进制加入 PATH。
+
+## 首次使用：一次性配置代理
+
+本网络访问 Docker Hub 必须走代理。dhs 支持**持久化配置**——配置一次，之后所有命令自动带代理，无需每条都写 `--proxy`：
+
+```bash
+# 1. 看当前配置（文件值为 "-" 表示未设置过）
+dhs config list
+
+# 2. 未设置时写入默认代理（写入后对所有 dhs 命令永久生效）
+dhs config set proxy http://192.168.0.225:7897
+
+# 3. 确认生效值
+dhs config get proxy    # 应输出 http://192.168.0.225:7897
+```
+
+配置文件位于平台标准目录（Windows `%APPDATA%\dhs\config.yaml`，Linux/macOS `~/.config/dhs/config.yaml`），可用 `--config` 指定其他路径。
+
+生效优先级：`--proxy` 参数 > 配置文件 > `HTTPS_PROXY`/`HTTP_PROXY` 环境变量 > 直连。所以：
+- **日常命令直接裸跑**：`dhs search nginx`、`dhs tags postgres`。
+- 临时换代理时才加 `--proxy <URL>`，不改配置文件。
+- `dhs config unset proxy` 可清除。
+
+**旧版二进制兜底**：如果 `dhs config` 子命令不存在（旧版二进制，重新安装即可解决），改为每条命令显式带代理：
 
 ```bash
 dhs --proxy "${DOCKERHUB_PROXY:-http://192.168.0.225:7897}" search nginx
 ```
 
-The examples below use the shorter `--proxy "$DOCKERHUB_PROXY"` form, which is fine once the variable is confirmed set (ideally in the profile so it persists).
+（`DOCKERHUB_PROXY` 未设置时内联默认值兜底；最好顺手 `export DOCKERHUB_PROXY=http://192.168.0.225:7897` 写进 shell 配置。）
 
-## Step 1 — Find repositories: `dhs search`
-
-```bash
-dhs --proxy "$DOCKERHUB_PROXY" search <keyword>            # top 25 results (default)
-dhs --proxy "$DOCKERHUB_PROXY" search <keyword> -n 10      # fewer results
-```
-
-Output columns: `NAME`, `STARS`, `PULLS`, `OFFICIAL` (✓ official / ✗ community), `DESCRIPTION`.
-
-Reading the results:
-- A `✓` in OFFICIAL means it's a Docker-maintained image (e.g. `nginx`, `redis`) — usually the safest default.
-- `user/repo` names (e.g. `bitnami/nginx`) are community images; mention who maintains them when it matters.
-- Show the table, then add a one-line recommendation when the user's intent is clear.
-
-## Step 2 — Inspect tags: `dhs tags`
+## 第 1 步 — 搜索仓库：`dhs search`
 
 ```bash
-dhs --proxy "$DOCKERHUB_PROXY" tags nginx                       # newest 10 tags by default
-dhs --proxy "$DOCKERHUB_PROXY" tags nginx --filter alpine       # only tags whose name contains "alpine"
-dhs --proxy "$DOCKERHUB_PROXY" tags nginx --all                 # every tag (can be hundreds)
-dhs --proxy "$DOCKERHUB_PROXY" tags nginx --sort size           # sort by size | name | date (default date)
-dhs --proxy "$DOCKERHUB_PROXY" tags user/repo                   # non-official image → use user/repo form
+dhs search <关键词>            # 默认返回前 25 条
+dhs search <关键词> -n 10      # 指定条数
 ```
 
-Output columns: `Tag`, `Status`, `Size(MB)`, `Architecture`, `LastUpdated`.
+输出列：`NAME`、`STARS`、`PULLS`、`OFFICIAL`（✓ 官方 / ✗ 社区）、`DESCRIPTION`。
 
-A bare name like `nginx` is shorthand for the official `library/nginx`. For community images pass the full `user/repo`. Note that the search API does not return an update time, so `search` shows a description column instead — only `tags` has `LastUpdated`.
+解读结果：
+- OFFICIAL 列为 `✓` 表示 Docker 官方维护的镜像（如 `nginx`、`redis`）——通常是最稳妥的默认选择。
+- `user/repo` 形式（如 `bitnami/nginx`）是社区镜像；重要时说明维护方。
+- 先展示表格，用户意图明确时补一句推荐。
 
-## Step 3 — Architecture filtering + pull commands
-
-When the user cares about CPU architecture (common for ARM servers, Apple Silicon, Raspberry Pi), combine `--arch` with `--gen-pull`:
+## 第 2 步 — 查看 Tag：`dhs tags`
 
 ```bash
-dhs --proxy "$DOCKERHUB_PROXY" tags nginx --arch amd64,arm64 --gen-pull
+dhs tags nginx                       # 默认最新 10 个 Tag
+dhs tags nginx --filter alpine       # 只看名字含 "alpine" 的 Tag
+dhs tags nginx --all                 # 全部 Tag（可能有几百个）
+dhs tags nginx --sort size           # 按 size | name | date 排序（默认 date）
+dhs tags user/repo                   # 非官方镜像 → 用 user/repo 形式
 ```
 
-- `--arch` keeps only tags that ship the requested architecture(s); comma-separated, OR semantics (a tag matching *any* listed arch is kept). Filtering looks at the architecture field, so `--arch arm64` still matches `arm64/v8`.
-- `--gen-pull` prints `docker pull` commands after the table. **It only takes effect when `--arch` is also given** — without `--arch`, dhs prints a notice and skips it, because without a fixed architecture the generated commands would be ambiguous.
-- amd64 → plain `image:tag` (the default platform on x86 hosts).
-- arm64 → `--platform=linux/arm64 image:tag`.
+输出列：`Tag`、`Status`、`Size(MB)`、`Architecture`、`LastUpdated`。
 
-Export to Markdown when the user wants to save or share the result:
+`nginx` 这种裸名字是官方 `library/nginx` 的简写；社区镜像要传完整 `user/repo`。注意搜索 API 不返回更新时间，所以 `search` 输出的是描述列——只有 `tags` 有 `LastUpdated`。
+
+## 第 3 步 — 架构过滤 + 拉取命令
+
+用户关心 CPU 架构时（ARM 服务器、Apple Silicon、树莓派很常见），`--arch` 配合 `--gen-pull` 使用：
 
 ```bash
-dhs --proxy "$DOCKERHUB_PROXY" tags nginx --arch amd64,arm64 --gen-pull -o nginx-tags.md
+dhs tags nginx --arch amd64,arm64 --gen-pull
 ```
 
-## Mapping common requests to commands
+- `--arch` 只保留包含指定架构的 Tag；逗号分隔、OR 语义（Tag 含*任一*列出架构即保留）。过滤看的是架构字段，所以 `--arch arm64` 能匹配 `arm64/v8`。
+- `--gen-pull` 在表格后输出 `docker pull` 命令。**必须同时给 `--arch` 才生效**——不带 `--arch` 时 dhs 只打印提示并跳过，因为架构不固定时生成的命令有歧义。
+- amd64 → 直接 `image:tag`（x86 主机的默认平台）。
+- arm64 → `--platform=linux/arm64 image:tag`。
 
-**Example 1 — "I need a redis image"**
-Search, then recommend the official one.
+用户要保存或分享结果时导出 Markdown：
+
 ```bash
-dhs --proxy "$DOCKERHUB_PROXY" search redis
+dhs tags nginx --arch amd64,arm64 --gen-pull -o nginx-tags.md
 ```
 
-**Example 2 — "What versions/tags does postgres have?"**
+## 常见请求 → 命令映射
+
+**例 1 —"帮我找个 redis 镜像"**
+搜索后推荐官方镜像。
 ```bash
-dhs --proxy "$DOCKERHUB_PROXY" tags postgres
+dhs search redis
 ```
-Add `--filter alpine` for a slim variant, `--all` to see everything.
 
-**Example 3 — "Give me pull commands for nginx for amd64 and arm64"**
+**例 2 —"postgres 有哪些版本/Tag？"**
 ```bash
-dhs --proxy "$DOCKERHUB_PROXY" tags nginx --arch amd64,arm64 --gen-pull
+dhs tags postgres
 ```
+要精简变体加 `--filter alpine`，看全部加 `--all`。
 
-**Example 4 — "Find a lightweight python image and get its pull command for my ARM server"**
+**例 3 —"给我 nginx 的 amd64 和 arm64 拉取命令"**
 ```bash
-dhs --proxy "$DOCKERHUB_PROXY" search python                       # pick the official `python`
-dhs --proxy "$DOCKERHUB_PROXY" tags python --filter slim --arch arm64 --gen-pull
+dhs tags nginx --arch amd64,arm64 --gen-pull
 ```
 
-## If a command still fails after setting the proxy
+**例 4 —"找个轻量的 python 镜像，给我 ARM 服务器用的拉取命令"**
+```bash
+dhs search python                       # 选官方 `python`
+dhs tags python --filter slim --arch arm64 --gen-pull
+```
 
-With `DOCKERHUB_PROXY` set, the connection should succeed. If a command still times out or is refused, the proxy itself is likely wrong or down — confirm the address with the user rather than guessing a different one, and check that the proxy host (`192.168.0.225:7897`) is reachable.
+## 命令失败时排查
 
-## Quick flag reference
+按顺序检查：
+1. `dhs config list` 看生效代理是否为 `-`（未配置）——是则按上文 `config set proxy` 配置。
+2. 已配置仍超时/被拒：多半是代理地址填错或代理挂了——和用户确认地址，不要自行换一个，并检查代理主机（`192.168.0.225:7897`）是否可达。
 
-Global (placed before the subcommand): `--proxy URL` / `-P`, `--config PATH`, `--no-color`.
+## 命令速查
 
-| subcommand | useful flags |
+全局参数（放在子命令前）：`--proxy URL` / `-P`、`--config PATH`、`--no-color`。
+
+| 子命令 | 说明 / 常用参数 |
 |---|---|
-| `search <keyword>` | `-n, --limit N` (default 25) |
-| `tags <image>` | `-n, --limit N` (10), `--all` / `-a`, `--sort name\|size\|date`, `--order asc\|desc`, `--filter SUBSTR`, `--arch a,b`, `--gen-pull`, `-o FILE` |
+| `search <关键词>` | `-n, --limit N`（默认 25） |
+| `tags <镜像>` | `-n, --limit N`（10）、`--all` / `-a`、`--sort name\|size\|date`、`--order asc\|desc`、`--filter SUBSTR`、`--arch a,b`、`--gen-pull`、`-o FILE` |
+| `config list` | 查看配置文件路径与各配置项、生效代理 |
+| `config set <key> <value>` | 写入配置；key 为 `proxy` 或 `no-color` |
+| `config get <key>` | 裸值输出，便于脚本 |
+| `config unset <key>` | 清除配置项 |

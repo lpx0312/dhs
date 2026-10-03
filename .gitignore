@@ -16,3 +16,6 @@ Thumbs.db
 # Go
 *.test
 *.out
+
+# 本地备份（英文版 skill 已在 git 历史中）
+backup/
