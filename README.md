@@ -59,7 +59,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dhs .
 ## 快速开始
 
 ```bash
-# 搜索镜像（需要代理时用 --proxy）
+# 首次使用：一次性配置代理（写入配置文件，之后所有命令自动生效）
+dhs config set proxy http://192.168.0.225:7897
+
+# 搜索镜像（代理已配置，直接裸跑；临时换代理才用 --proxy）
 dhs search nginx
 dhs --proxy http://127.0.0.1:7890 search redis
 
@@ -88,11 +91,21 @@ dhs tags nginx --arch amd64,arm64 --gen-pull -o nginx-tags.md
 
 ### 配置文件
 
-位置（平台标准目录）：
+推荐用 `dhs config` 命令读写，不必手改文件：
+
+```bash
+dhs config set proxy http://192.168.0.225:7897   # 设置代理
+dhs config set no-color true                     # 关闭彩色输出
+dhs config get proxy                             # 读取单个配置项
+dhs config list                                  # 查看文件路径、各配置项与生效代理
+dhs config unset proxy                           # 清除某项
+```
+
+位置（平台标准目录，可用 `--config` 覆盖）：
 - **Windows**: `%APPDATA%\dhs\config.yaml`
 - **Linux**: `~/.config/dhs/config.yaml`
 
-示例：
+示例（`config set` 生成的就是这个格式）：
 
 ```yaml
 proxy: "http://192.168.0.225:7897"
@@ -108,6 +121,15 @@ no_color: false
 | `-P, --proxy` | 代理地址，如 `http://host:port` |
 | `--config` | 配置文件路径（默认走平台标准目录） |
 | `--no-color` | 关闭彩色输出 |
+
+### `dhs config`
+
+| 子命令 | 说明 |
+|--------|------|
+| `config set <key> <value>` | 写入配置项；key 为 `proxy` / `no-color`（兼容 `no_color`） |
+| `config get <key>` | 输出裸值，便于脚本；未设置为 `(未设置)` |
+| `config list` | 查看配置文件路径、各配置项与生效代理 |
+| `config unset <key>` | 清除配置项，恢复默认 |
 
 ### `dhs search <keyword>`
 

@@ -36,15 +36,19 @@ func Execute() {
 	}
 }
 
+// configPath resolves the config file path: --config flag or platform default.
+func configPath() (string, error) {
+	if flagConfig != "" {
+		return flagConfig, nil
+	}
+	return config.DefaultConfigPath()
+}
+
 // loadConfig resolves the config path (flag or default) and loads it.
 func loadConfig() (*config.Config, error) {
-	path := flagConfig
-	if path == "" {
-		p, err := config.DefaultConfigPath()
-		if err != nil {
-			return nil, fmt.Errorf("resolving default config path: %w", err)
-		}
-		path = p
+	path, err := configPath()
+	if err != nil {
+		return nil, fmt.Errorf("resolving default config path: %w", err)
 	}
 	return config.Load(path)
 }

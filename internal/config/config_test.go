@@ -82,6 +82,21 @@ func TestEffectiveProxy_EnvHTTPSFallback(t *testing.T) {
 	}
 }
 
+func TestSave_RoundTripCreatesDirs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dhs", "config.yaml")
+	want := &Config{Proxy: "http://p:1234", NoColor: true}
+	if err := Save(path, want); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load after Save failed: %v", err)
+	}
+	if got.Proxy != want.Proxy || got.NoColor != want.NoColor {
+		t.Errorf("round trip = %+v, want %+v", got, want)
+	}
+}
+
 func TestDefaultConfigPath_ContainsDhs(t *testing.T) {
 	p, err := DefaultConfigPath()
 	if err != nil {
