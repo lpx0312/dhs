@@ -17,5 +17,27 @@ Thumbs.db
 *.test
 *.out
 
+# ===== AI Agent / 本地工具配置（不提交） =====
+.cursor/
+.claude/
+.claude-plugin.local/
+.codebuddy/
+.codex/
+.zcode/
+.zcodeignore
+.agents/
+.gemini/
+.qwen/
+.trae/
+.windsurf/
+.cline/
+.continue/
+.aider*
+.copilot/
+.kilocode/
+.roo/
+.void/
+.zed/
+
 # 本地备份（英文版 skill 已在 git 历史中）
 backup/
