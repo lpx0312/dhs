@@ -1,0 +1,43 @@
+name: CI
+
+# master 推送与 PR 时跑测试；发版仍由 tag 触发的 release.yml 负责
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      # 格式与静态检查只在 Linux 跑（Windows 检出可能带 CRLF，会误报 gofmt）
+      - name: Check formatting & vet
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed on: $unformatted"
+            exit 1
+          fi
+          go vet ./...
+
+      - name: Test
+        run: go test ./... -coverprofile=cover.out -covermode=atomic
+
+      - name: Coverage summary
+        run: go tool cover -func=cover.out | tail -1
