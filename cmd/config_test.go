@@ -76,4 +76,9 @@ func TestClearSetting(t *testing.T) {
 	if orig.Proxy == "" {
 		t.Error("clearSetting must not mutate the original config")
 	}
+
+	next = clearSetting(orig, "no-color")
+	if next.NoColor || next.Proxy != "http://p:1" {
+		t.Errorf("clearSetting(no-color) = %+v, want only no-color cleared", next)
+	}
 }

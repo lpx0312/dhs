@@ -88,7 +88,13 @@ Examples:
 		if tagsAll {
 			fmt.Printf("%s%s\n", ui.Green(fmt.Sprintf("找到 %d 个标签", len(tags))), archNote)
 		} else {
-			fmt.Printf("%s%s\n", ui.Green(fmt.Sprintf("找到 %d 个标签，显示前 %d 个", len(tags), tagsLimit)), archNote)
+			// Cap the "first N" figure at the actual count so filtering
+			// never advertises more rows than it will print.
+			displayLimit := tagsLimit
+			if len(tags) < displayLimit {
+				displayLimit = len(tags)
+			}
+			fmt.Printf("%s%s\n", ui.Green(fmt.Sprintf("找到 %d 个标签，显示前 %d 个", len(tags), displayLimit)), archNote)
 		}
 		fmt.Println()
 
@@ -192,19 +198,19 @@ func filterByArch(tags []dockerhub.Tag, targets []string) []dockerhub.Tag {
 func sortTags(tags []dockerhub.Tag, by string, asc bool) {
 	less := func(i, j int) bool {
 		a, b := tags[i], tags[j]
-		var less bool
+		var lt, gt bool
 		switch by {
 		case "name":
-			less = a.Name < b.Name
+			lt, gt = a.Name < b.Name, a.Name > b.Name
 		case "size":
-			less = a.SizeMB < b.SizeMB
+			lt, gt = a.SizeMB < b.SizeMB, a.SizeMB > b.SizeMB
 		default: // date
-			less = a.LastUpdated < b.LastUpdated
+			lt, gt = a.LastUpdated < b.LastUpdated, a.LastUpdated > b.LastUpdated
 		}
 		if asc {
-			return less
+			return lt
 		}
-		return !less
+		return gt
 	}
 	sort.SliceStable(tags, less)
 }

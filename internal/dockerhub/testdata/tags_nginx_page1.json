@@ -1,0 +1,108 @@
+{
+  "count": 12,
+  "next": "",
+  "previous": "",
+  "results": [
+    {
+      "name": "latest",
+      "tag_status": "active",
+      "full_size": 187600000,
+      "last_updated": "2026-08-01T08:00:00.123456Z",
+      "images": [
+        { "architecture": "amd64", "os": "linux" },
+        { "architecture": "arm", "variant": "v7", "os": "linux" },
+        { "architecture": "arm64", "variant": "v8", "os": "linux" },
+        { "architecture": "386", "os": "linux" },
+        { "architecture": "amd64", "os": "windows" },
+        { "architecture": "unknown", "os": "unknown" }
+      ]
+    },
+    {
+      "name": "1.27-alpine",
+      "tag_status": "active",
+      "full_size": 47185920,
+      "last_updated": "2026-07-28T10:30:00Z",
+      "images": [
+        { "architecture": "amd64", "os": "linux" },
+        { "architecture": "arm64", "variant": "v8", "os": "linux" }
+      ]
+    },
+    {
+      "name": "1.27",
+      "tag_status": "active",
+      "full_size": 186600000,
+      "last_updated": "2026-07-27T09:00:00Z",
+      "images": [
+        { "architecture": "amd64", "os": "linux" },
+        { "architecture": "arm64", "variant": "v8", "os": "linux" }
+      ]
+    },
+    {
+      "name": "1.27-alpine-perl",
+      "tag_status": "active",
+      "full_size": 65000000,
+      "last_updated": "2026-07-27T08:00:00Z",
+      "images": [
+        { "architecture": "amd64", "os": "linux" },
+        { "architecture": "arm64", "variant": "v8", "os": "linux" }
+      ]
+    },
+    {
+      "name": "1.26-alpine",
+      "tag_status": "active",
+      "full_size": 46000000,
+      "last_updated": "2026-06-20T12:00:00Z",
+      "images": [
+        { "architecture": "amd64", "os": "linux" },
+        { "architecture": "arm64", "variant": "v8", "os": "linux" }
+      ]
+    },
+    {
+      "name": "1.26",
+      "tag_status": "active",
+      "full_size": 180000000,
+      "last_updated": "2026-06-20T11:00:00Z",
+      "images": [
+        { "architecture": "amd64", "os": "linux" },
+        { "architecture": "arm", "variant": "v7", "os": "linux" },
+        { "architecture": "arm64", "variant": "v8", "os": "linux" }
+      ]
+    },
+    {
+      "name": "alpine",
+      "tag_status": "active",
+      "full_size": 45000000,
+      "last_updated": "2026-07-28T10:00:00Z",
+      "images": [
+        { "architecture": "386", "os": "linux" }
+      ]
+    },
+    {
+      "name": "alpine-slim",
+      "tag_status": "inactive",
+      "full_size": 44000000,
+      "last_updated": "2026-05-01T00:00:00Z",
+      "images": [
+        { "architecture": "amd64", "os": "linux" }
+      ]
+    },
+    {
+      "name": "perl",
+      "tag_status": "active",
+      "full_size": 90000000,
+      "last_updated": "2026-07-01T00:00:00Z",
+      "images": [
+        { "architecture": "amd64", "os": "windows" }
+      ]
+    },
+    {
+      "name": "stable-alpine",
+      "tag_status": "active",
+      "full_size": 47000000,
+      "last_updated": "2026-07-28T09:00:00Z",
+      "images": [
+        { "architecture": "arm64", "variant": "v8", "os": "linux" }
+      ]
+    }
+  ]
+}

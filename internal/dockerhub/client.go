@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 )
 
@@ -37,5 +38,12 @@ func NewClient(proxyURL string) (*http.Client, error) {
 	}, nil
 }
 
-// BaseURL returns the Docker Hub API base URL.
-func BaseURL() string { return baseURL }
+// BaseURL returns the Docker Hub API base URL. The DHS_API_BASE
+// environment variable overrides it, which lets e2e tests point the CLI
+// at a mock server and users point it at a compatible mirror.
+func BaseURL() string {
+	if v := os.Getenv("DHS_API_BASE"); v != "" {
+		return v
+	}
+	return baseURL
+}

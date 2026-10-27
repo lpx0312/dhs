@@ -1,0 +1,26 @@
+{
+  "count": 12,
+  "next": "",
+  "previous": "ignored",
+  "results": [
+    {
+      "name": "1.25-alpine",
+      "tag_status": "active",
+      "full_size": 44000000,
+      "last_updated": "2026-04-01T00:00:00Z",
+      "images": [
+        { "architecture": "amd64", "os": "linux" }
+      ]
+    },
+    {
+      "name": "1.25",
+      "tag_status": "active",
+      "full_size": 175000000,
+      "last_updated": "2026-04-01T00:00:00Z",
+      "images": [
+        { "architecture": "amd64", "os": "linux" },
+        { "architecture": "arm64", "variant": "v8", "os": "linux" }
+      ]
+    }
+  ]
+}

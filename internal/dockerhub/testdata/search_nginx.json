@@ -1,0 +1,28 @@
+{
+  "count": 3,
+  "next": "",
+  "previous": "",
+  "results": [
+    {
+      "repo_name": "nginx",
+      "star_count": 20000,
+      "pull_count": 10000000000,
+      "is_official": true,
+      "short_description": "Official build of Nginx."
+    },
+    {
+      "repo_name": "bitnami/nginx",
+      "star_count": 300,
+      "pull_count": 500000000,
+      "is_official": false,
+      "short_description": "Bitnami container image for nginx"
+    },
+    {
+      "repo_name": "nginxinc/nginx-unprivileged",
+      "star_count": 800,
+      "pull_count": 50000000,
+      "is_official": false,
+      "short_description": "Unprivileged NGINX image"
+    }
+  ]
+}

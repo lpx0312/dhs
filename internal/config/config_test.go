@@ -106,3 +106,135 @@ func TestDefaultConfigPath_ContainsDhs(t *testing.T) {
 		t.Errorf("default path %q should be inside a dhs dir", p)
 	}
 }
+
+// --- 追加：边界与错误分支 ---
+
+func TestLoad_EmptyPathReturnsZero(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load(\"\") error: %v", err)
+	}
+	if cfg == nil || cfg.Proxy != "" || cfg.NoColor {
+		t.Errorf("Load(\"\") = %+v, want zero config", cfg)
+	}
+}
+
+func TestLoad_EmptyFileContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(path, nil, 0644)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("empty file should load, got %v", err)
+	}
+	if cfg.Proxy != "" || cfg.NoColor {
+		t.Errorf("empty file = %+v, want zero config", cfg)
+	}
+}
+
+func TestLoad_DirectoryPathReturnsReadError(t *testing.T) {
+	// A directory is neither missing nor valid YAML: exercises the
+	// non-IsNotExist error branch of the ReadFile call.
+	_, err := Load(t.TempDir())
+	if err == nil {
+		t.Fatal("expected read error for directory path, got nil")
+	}
+}
+
+func TestLoad_TypeMismatchReturnsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(path, []byte("proxy: [a, b]\n"), 0644) // sequence where string expected
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected unmarshal error for type mismatch")
+	}
+}
+
+func TestEffectiveNoColor(t *testing.T) {
+	cases := []struct {
+		cfg  Config
+		flag bool
+		want bool
+	}{
+		{Config{}, false, false},
+		{Config{}, true, true},
+		{Config{NoColor: true}, false, true},
+		{Config{NoColor: true}, true, true},  // flag wins, same value
+		{Config{NoColor: false}, true, true}, // flag wins over file
+	}
+	for i, c := range cases {
+		if got := c.cfg.EffectiveNoColor(c.flag); got != c.want {
+			t.Errorf("case %d: EffectiveNoColor(%v) = %v, want %v", i, c.flag, got, c.want)
+		}
+	}
+}
+
+func TestEffectiveProxy_DirectWhenNothingSet(t *testing.T) {
+	for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY"} {
+		old, had := os.LookupEnv(k)
+		os.Unsetenv(k)
+		defer func() {
+			if had {
+				os.Setenv(k, old)
+			} else {
+				os.Unsetenv(k)
+			}
+		}()
+	}
+	cfg := &Config{}
+	if got := cfg.EffectiveProxy("", ""); got != "" {
+		t.Errorf("EffectiveProxy = %q, want empty (direct)", got)
+	}
+}
+
+func TestSave_ParentIsFileReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// "blocker/config.yaml": MkdirAll must fail because a path element
+	// exists as a regular file.
+	err := Save(filepath.Join(blocker, "config.yaml"), &Config{})
+	if err == nil {
+		t.Fatal("expected mkdir error when parent path is a file")
+	}
+}
+
+func TestSave_PathIsDirectoryReturnsWriteError(t *testing.T) {
+	// Writing "into" an existing directory must fail at the WriteFile step.
+	err := Save(t.TempDir(), &Config{})
+	if err == nil {
+		t.Fatal("expected write error when target is a directory")
+	}
+}
+
+func TestSave_EmptyConfigRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dhs", "config.yaml")
+	if err := Save(path, &Config{}); err != nil {
+		t.Fatalf("Save empty config: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load after Save: %v", err)
+	}
+	if got.Proxy != "" || got.NoColor {
+		t.Errorf("round trip = %+v, want zero config", got)
+	}
+}
+
+func TestDefaultConfigPath_ErrorWhenUserDirUnresolvable(t *testing.T) {
+	// Blank every variable os.UserConfigDir consults so it must fail.
+	for _, k := range []string{"AppData", "XDG_CONFIG_HOME", "HOME"} {
+		old, had := os.LookupEnv(k)
+		os.Setenv(k, "")
+		defer func(k, old string, had bool) {
+			if had {
+				os.Setenv(k, old)
+			} else {
+				os.Unsetenv(k)
+			}
+		}(k, old, had)
+	}
+	if _, err := DefaultConfigPath(); err == nil {
+		t.Fatal("expected error when user config dir cannot be resolved")
+	}
+}
