@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -40,10 +41,12 @@ func NewClient(proxyURL string) (*http.Client, error) {
 
 // BaseURL returns the Docker Hub API base URL. The DHS_API_BASE
 // environment variable overrides it, which lets e2e tests point the CLI
-// at a mock server and users point it at a compatible mirror.
+// at a mock server and users point it at a compatible mirror. A trailing
+// slash is trimmed so callers can concatenate base + "/v2/..." without
+// producing "//v2/..." double-slash paths.
 func BaseURL() string {
 	if v := os.Getenv("DHS_API_BASE"); v != "" {
-		return v
+		return strings.TrimSuffix(v, "/")
 	}
 	return baseURL
 }

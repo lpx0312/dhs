@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // searchBody / tagsBody mirror the shared fixtures in
@@ -38,7 +40,6 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "mkdir:", err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(tmp)
 
 	binPath = filepath.Join(tmp, "dhs-e2e")
 	if ext := execExt(); ext != "" {
@@ -48,7 +49,11 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "build failed: %v\n%s", err, out)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	// os.Exit skips defers, so the temp dir must be removed explicitly
+	// before exiting or every `go test` run leaks a dhs-e2e-* directory.
+	os.RemoveAll(tmp)
+	os.Exit(code)
 }
 
 func execExt() string {
@@ -58,16 +63,23 @@ func execExt() string {
 	return ""
 }
 
-// run executes the built binary. The child inherits DHS_API_BASE (t.Setenv)
-// and gets proxies blanked so EffectiveProxy stays deterministic.
+// run executes the built binary with a 30s watchdog. The child inherits
+// DHS_API_BASE (t.Setenv) and gets proxies blanked so EffectiveProxy stays
+// deterministic. NO_COLOR=1 keeps output assertions free of ANSI escapes.
 func run(t *testing.T, args ...string) (string, int) {
 	t.Helper()
-	cmd := exec.Command(binPath, args...)
-	cmd.Env = append(os.Environ(), "HTTPS_PROXY=", "HTTP_PROXY=", "NO_COLOR=")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, args...)
+	cmd.Env = append(os.Environ(), "HTTPS_PROXY=", "HTTP_PROXY=", "NO_COLOR=1")
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	err := cmd.Run()
+	if ctx.Err() != nil {
+		// Timed out and was killed: surface whatever was captured first.
+		t.Fatalf("run %v timed out after 30s, captured output:\n%s", args, out.String())
+	}
 	code := 0
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -112,6 +124,19 @@ func TestBinary_UnknownCommandExitsNonZero(t *testing.T) {
 	out, code := run(t, "frobnicate")
 	if code == 0 {
 		t.Errorf("unknown command exit=%d, want non-zero\n%s", code, out)
+	}
+	if !strings.Contains(out, "unknown command") {
+		t.Errorf("output should name the unknown command:\n%s", out)
+	}
+}
+
+// TestBinary_UnknownCommandExitsExactlyOne pins the precise exit code: the
+// root Execute() helper calls os.Exit(1) on any command error, so an unknown
+// command must exit with exactly 1 (not just any non-zero value).
+func TestBinary_UnknownCommandExitsExactlyOne(t *testing.T) {
+	out, code := run(t, "definitely-not-a-command")
+	if code != 1 {
+		t.Errorf("unknown command exit=%d, want exactly 1\n%s", code, out)
 	}
 	if !strings.Contains(out, "unknown command") {
 		t.Errorf("output should name the unknown command:\n%s", out)

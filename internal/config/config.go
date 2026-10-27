@@ -55,12 +55,20 @@ func (c *Config) EffectiveProxy(flagProxy string, _ string) string {
 }
 
 // EffectiveNoColor returns whether color should be disabled,
-// applying priority: flag > file.
+// applying priority: flag > file > NO_COLOR env.
+// The env layer follows the no-color.org convention: any non-empty
+// NO_COLOR value disables color; an empty value is ignored.
 func (c *Config) EffectiveNoColor(flagNoColor bool) bool {
 	if flagNoColor {
 		return true
 	}
-	return c.NoColor
+	if c.NoColor {
+		return true
+	}
+	if v := os.Getenv("NO_COLOR"); v != "" {
+		return true
+	}
+	return false
 }
 
 // Save writes cfg to path as YAML, creating parent directories as needed.

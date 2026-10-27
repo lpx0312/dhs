@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"dhs/internal/dockerhub"
+	"dhs/internal/ui"
 )
 
 // fetchTagsFromMock serves one page of tags JSON and returns the normalized
@@ -51,6 +52,19 @@ func TestParseImageRef(t *testing.T) {
 		{"user/", "user", ""},                               // trailing slash: empty name
 		{"/img", "", "img"},                                 // leading slash: empty user
 		{"", "library", ""},                                 // empty ref
+
+		// --- 【绿·钉住畸形现状】以下用例钉住 parseImageRef 对 tag/digest/registry
+		// 引用的错误切分。修复方向（报错 vs 剥离 tag/digest vs 识别 registry 前缀）
+		// 未定，先钉住当前行为防止静默变化；修复落地时这些期望值应同步翻转。 ---
+		// 带 tag 的官方镜像：tag 未剥离，整体进 name。
+		{"nginx:1.27", "library", "nginx:1.27"},
+		// 带 tag 的用户镜像：tag 同样未剥离。
+		{"bitnami/nginx:1.27", "bitnami", "nginx:1.27"},
+		// digest 引用：无斜杠，digest 整体留在 name 里。
+		{"nginx@sha256:abcd1234", "library", "nginx@sha256:abcd1234"},
+		// 带 registry（含端口）的引用：第一个斜杠切分，host:port 被当成 user，
+		// "team/app" 被当成镜像名（其内部的斜杠未再处理）。
+		{"registry.io:5000/team/app", "registry.io:5000", "team/app"},
 	}
 	for _, c := range cases {
 		u, n := parseImageRef(c.in)
@@ -311,5 +325,148 @@ func TestExportTags_WriteErrorPropagates(t *testing.T) {
 	err := exportTags("unused.md", "u", "i", tags, nil, false)
 	if !errors.Is(err, sentinel) {
 		t.Errorf("err = %v, want the osWriteFile error", err)
+	}
+}
+
+// 【绿·钉住现状】sortTags 补 size desc 组合（原测试只覆盖 size asc）：
+// 大 size 在前。
+func TestSortTags_SizeDesc(t *testing.T) {
+	tags := []dockerhub.Tag{
+		{Name: "small", SizeMB: 5},
+		{Name: "big", SizeMB: 50},
+		{Name: "mid", SizeMB: 20},
+	}
+	sortTags(tags, "size", false)
+	if tags[0].Name != "big" || tags[1].Name != "mid" || tags[2].Name != "small" {
+		t.Errorf("size desc = %v, want big>mid>small", names(tags))
+	}
+}
+
+// 【绿·钉住现状】--sort 非法值走 default(date) 分支，且 switch 大小写敏感：
+// "size "（尾随空格）、"NAME"（大写）都不命中 name/size，落回 date。
+// 命名让 date-asc 与 name-asc 的期望顺序不同，从而证明确实走了 date 分支。
+func TestSortTags_IllegalSortKeyFallsBackToDate_GreenPin(t *testing.T) {
+	tags := []dockerhub.Tag{
+		{Name: "aaa-new", SizeMB: 1, LastUpdated: "2026-06-01T00:00:00Z"},
+		{Name: "zzz-old", SizeMB: 9, LastUpdated: "2026-01-01T00:00:00Z"},
+	}
+	// 前置 sanity：name asc → aaa-new 在前。
+	sortTags(tags, "name", true)
+	if tags[0].Name != "aaa-new" {
+		t.Fatalf("sanity name asc = %v", names(tags))
+	}
+	// 非法 "size "（含空格）+ desc → date desc：新的在前。
+	sortTags(tags, "size ", false)
+	if tags[0].Name != "aaa-new" || tags[1].Name != "zzz-old" {
+		t.Errorf("非法 sort 键 %q 应走 date desc = %v", "size ", names(tags))
+	}
+	// "NAME"（大写）+ asc：若命中 name 分支应为 aaa-new 在前；实际走 date asc
+	// → 旧的在前，两者顺序不同，可区分。
+	sortTags(tags, "NAME", true)
+	if tags[0].Name != "zzz-old" || tags[1].Name != "aaa-new" {
+		t.Errorf("大写 %q 不命中 name 分支，应走 date asc = %v", "NAME", names(tags))
+	}
+}
+
+// mockTwoTagTagsBody：两个仅日期不同的 tag，供 RunE 排序方向断言用。
+const mockTwoTagTagsBody = `{
+ "count": 2, "next": "", "results": [
+  {"name":"oldtag","tag_status":"active","full_size":1048576,"last_updated":"2026-01-01T00:00:00Z",
+   "images":[{"architecture":"amd64","os":"linux"}]},
+  {"name":"newtag","tag_status":"active","full_size":2097152,"last_updated":"2026-06-01T00:00:00Z",
+   "images":[{"architecture":"amd64","os":"linux"}]}
+ ]}`
+
+// 【绿·钉住现状】--order 非法值被当 desc：RunE 以 tagsOrder == "asc" 计算
+// 升序标记，除 "asc" 外的任何值（含拼错的 "bogus"）都等价 desc。
+// 直调 tagsCmd.RunE + 本地 httptest mock（127.0.0.1，离线安全），不经 cobra。
+func TestTagsRunE_IllegalOrderTreatedAsDesc_GreenPin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(mockTwoTagTagsBody))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("DHS_API_BASE", srv.URL)
+	// 直连 mock；屏蔽开发 shell 可能导出的代理环境变量。
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
+
+	// 快照并恢复 tags RunE 读写的全部包级 flag 变量。
+	oldConfig, oldProxy, oldNoColor := flagConfig, flagProxy, flagNoColor
+	oldLimit, oldSort, oldOrder := tagsLimit, tagsSort, tagsOrder
+	oldAll, oldOS, oldFilter := tagsAll, tagsOS, tagsFilter
+	oldArch, oldGenPull, oldOutput := tagsArch, tagsGenPull, tagsOutput
+	t.Cleanup(func() {
+		flagConfig, flagProxy, flagNoColor = oldConfig, oldProxy, oldNoColor
+		tagsLimit, tagsSort, tagsOrder = oldLimit, oldSort, oldOrder
+		tagsAll, tagsOS, tagsFilter = oldAll, oldOS, oldFilter
+		tagsArch, tagsGenPull, tagsOutput = oldArch, oldGenPull, oldOutput
+		ui.SetEnabled(false) // RunE 内 applyColorSetting 会翻转全局色彩开关
+	})
+
+	run := func(order string) string {
+		flagConfig = filepath.Join(t.TempDir(), "config.yaml")
+		flagProxy, flagNoColor = "", false
+		tagsLimit, tagsSort, tagsAll, tagsOS = 10, "date", false, false
+		tagsFilter, tagsArch, tagsGenPull, tagsOutput = "", "", false, ""
+		tagsOrder = order
+		return captureRunEOutput(t, func() {
+			if err := tagsCmd.RunE(nil, []string{"demo"}); err != nil {
+				t.Errorf("tagsCmd.RunE(order=%q): %v", order, err)
+			}
+		})
+	}
+
+	rowOrder := func(out string) (int, int) {
+		iOld := strings.Index(out, "\noldtag ")
+		iNew := strings.Index(out, "\nnewtag ")
+		if iOld < 0 || iNew < 0 {
+			t.Fatalf("输出缺少数据行:\n%s", out)
+		}
+		return iOld, iNew
+	}
+
+	// 非法 order 值 → desc：新的（newtag, 2026-06）在前。
+	out := run("bogus")
+	iOld, iNew := rowOrder(out)
+	if iNew > iOld {
+		t.Errorf("--order bogus 当前被当作 desc，newtag 应排在 oldtag 前:\n%s", out)
+	}
+	// 对照：精确的 "asc" 才会翻转为升序。
+	out = run("asc")
+	iOld, iNew = rowOrder(out)
+	if iNew < iOld {
+		t.Errorf("--order asc 应为升序，oldtag 应排在 newtag 前:\n%s", out)
+	}
+}
+
+// emptyArchTagsBody：一个 tag 无 images，另一个只有 "unknown" 架构。
+// 两者经 FetchTags 规范化后 archSet 均为空集。
+const emptyArchTagsBody = `{
+ "count": 2, "next": "", "results": [
+  {"name":"no-images","tag_status":"active","full_size":1024,"last_updated":"2026-01-01T00:00:00Z",
+   "images":[]},
+  {"name":"unknown-only","tag_status":"active","full_size":2048,"last_updated":"2026-01-02T00:00:00Z",
+   "images":[{"architecture":"unknown","os":"linux"}]}
+ ]}`
+
+// 【绿·钉住现状】filterByArch 把"空架构集"视为不匹配：
+// images 为空或全为 unknown 的 tag，archSet 为空 → HasArch 恒 false → 被过滤掉，
+// 即使目标架构列表非空也不会"匹配任何架构"。必须经 FetchTags 构造
+// （archSet 未导出），故复用 fetchTagsFromMock。
+func TestFilterByArch_EmptyArchSetNeverMatches_GreenPin(t *testing.T) {
+	tags := fetchTagsFromMock(t, emptyArchTagsBody, false)
+	if len(tags) != 2 {
+		t.Fatalf("mock 应返回 2 个 tag, got %d", len(tags))
+	}
+	for _, tg := range tags {
+		if tg.HasArch("amd64") {
+			t.Errorf("%s: 空架构集 HasArch(amd64) 应为 false", tg.Name)
+		}
+	}
+	if got := filterByArch(tags, []string{"amd64"}); len(got) != 0 {
+		t.Errorf("单目标过滤 = %v, want 空（空架构集不匹配）", names(got))
+	}
+	if got := filterByArch(tags, []string{"amd64", "arm64", "386"}); len(got) != 0 {
+		t.Errorf("多目标过滤 = %v, want 空", names(got))
 	}
 }

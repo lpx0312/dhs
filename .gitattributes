@@ -1,0 +1,11 @@
+# Normalize line endings: gofmt (CI runs it on ubuntu) treats CRLF as a diff,
+# so Go/workflow files must always check out with LF regardless of git config.
+*.go    text eol=lf
+*.mod   text eol=lf
+*.sum   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.ps1   text eol=crlf
+*.bat   text eol=crlf

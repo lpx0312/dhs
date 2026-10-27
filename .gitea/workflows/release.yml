@@ -25,11 +25,12 @@ jobs:
         run: |
           mkdir -p dist
 
-          GOOS=linux   GOARCH=amd64  go build -ldflags="-s -w" -o dist/dhs-linux-amd64   .
-          GOOS=linux   GOARCH=arm64  go build -ldflags="-s -w" -o dist/dhs-linux-arm64   .
-          GOOS=windows GOARCH=amd64  go build -ldflags="-s -w" -o dist/dhs-windows-amd64.exe .
-          GOOS=darwin  GOARCH=amd64  go build -ldflags="-s -w" -o dist/dhs-darwin-amd64  .
-          GOOS=darwin  GOARCH=arm64  go build -ldflags="-s -w" -o dist/dhs-darwin-arm64  .
+          # CGO_ENABLED=0：静态链接，产物可在 Alpine/scratch 等无 glibc 环境运行（与 GitHub release.yml 对齐）
+          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64  go build -ldflags="-s -w" -o dist/dhs-linux-amd64   .
+          CGO_ENABLED=0 GOOS=linux   GOARCH=arm64  go build -ldflags="-s -w" -o dist/dhs-linux-arm64   .
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64  go build -ldflags="-s -w" -o dist/dhs-windows-amd64.exe .
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64  go build -ldflags="-s -w" -o dist/dhs-darwin-amd64  .
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64  go build -ldflags="-s -w" -o dist/dhs-darwin-arm64  .
 
           echo "=== Build complete ==="
           ls -lh dist/

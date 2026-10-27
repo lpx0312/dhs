@@ -76,3 +76,16 @@ func TestBaseURL_EnvOverride(t *testing.T) {
 		t.Errorf("BaseURL() = %q, want env override", got)
 	}
 }
+
+// --- 追加：审查结论 8（BaseURL 尾斜杠） ---
+
+// TestBaseURL_TrailingSlashShouldBeTrimmed 【绿·钉修复】(审查结论 8)
+// 修复前：DHS_API_BASE 带尾斜杠时 BaseURL() 原样返回（不做 TrimSuffix），
+// 调用方拼 base + "/v2/..." 会得到 "//v2/..." 双斜杠 URL。修复后尾斜杠被
+// TrimSuffix 去掉，本测试钉住"尾斜杠必须被 Trim"这一契约。
+func TestBaseURL_TrailingSlashShouldBeTrimmed(t *testing.T) {
+	t.Setenv("DHS_API_BASE", "http://srv.example/")
+	if got := BaseURL(); got != "http://srv.example" {
+		t.Errorf("BaseURL() = %q, want %q (trailing slash must be trimmed; verbatim return produces //v2/... URLs)", got, "http://srv.example")
+	}
+}

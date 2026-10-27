@@ -2,9 +2,20 @@ package ui
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
+
+// ansiPattern matches SGR-style ANSI escape sequences (e.g. "\x1b[31m", "\x1b[0m").
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// stripANSI removes ANSI color escape sequences. The byte length of the result
+// reflects only visible content, so it is used for column-width math while the
+// original (possibly colored) string is still what gets written to the output.
+func stripANSI(s string) string {
+	return ansiPattern.ReplaceAllString(s, "")
+}
 
 // --- Row structs (pre-formatted strings; the caller formats numbers) ---
 
@@ -37,12 +48,12 @@ type PullSpec struct {
 func renderTable(headers []string, rows [][]string) string {
 	widths := make([]int, len(headers))
 	for i, h := range headers {
-		widths[i] = len(h)
+		widths[i] = len(stripANSI(h))
 	}
 	for _, r := range rows {
 		for i := 0; i < len(headers) && i < len(r); i++ {
-			if len(r[i]) > widths[i] {
-				widths[i] = len(r[i])
+			if w := len(stripANSI(r[i])); w > widths[i] {
+				widths[i] = w
 			}
 		}
 	}
@@ -50,7 +61,7 @@ func renderTable(headers []string, rows [][]string) string {
 	writeRow := func(cells []string) {
 		for i, c := range cells {
 			b.WriteString(c)
-			pad := widths[i] - len(c)
+			pad := widths[i] - len(stripANSI(c))
 			if pad > 0 {
 				b.WriteString(strings.Repeat(" ", pad))
 			}
@@ -98,13 +109,14 @@ func RenderTagTable(rows []TagRow) string {
 // FormatPullCommands builds docker pull command strings for given specs.
 // user=="library" => image name omits the library/ prefix (matches ps1).
 // amd64 => plain "<image>:<tag>"; arm64 => "--platform=linux/arm64 <image>:<tag>".
-// Output is ordered by tag name then amd64-before-arm64.
+// Output is ordered by tag name then amd64-before-arm64; specs with equal tag
+// names keep their input order (stable sort). The input slice is sorted in place.
 func FormatPullCommands(user, image string, specs []PullSpec) []string {
 	imageName := image
 	if user != "library" {
 		imageName = user + "/" + image
 	}
-	sort.Slice(specs, func(i, j int) bool { return specs[i].Tag < specs[j].Tag })
+	sort.SliceStable(specs, func(i, j int) bool { return specs[i].Tag < specs[j].Tag })
 	var out []string
 	for _, s := range specs {
 		if s.Arches["amd64"] {

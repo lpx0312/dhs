@@ -2,11 +2,14 @@ package dockerhub
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -410,5 +413,481 @@ func TestParseTagArches_EmptyImages(t *testing.T) {
 	arches, archSet := parseTagArches(tagResult{}, false)
 	if len(arches) != 0 || len(archSet) != 0 {
 		t.Errorf("no images => empty lists, got %v %v", arches, archSet)
+	}
+}
+
+// --- 追加：审查结论 1/2/3/6/7 的钉测试 ---
+
+// noSleep 把页间 sleep 置 0 并在测试结束后恢复。
+func noSleep(t *testing.T) {
+	t.Helper()
+	prev := tagsPageSleep
+	tagsPageSleep = 0
+	t.Cleanup(func() { tagsPageSleep = prev })
+}
+
+// TestFetchTags_RelativeNextCursorShouldResolveAgainstBase 【绿·钉修复】(审查结论 1a)
+// 修复前：client 盲跟 pr.Next，next 为相对路径（"/v2/...?page=2"）时直接
+// client.Get(相对URL)，报 `unsupported protocol scheme ""`。修复后 resolveNext
+// 将相对 next 基于 base 解析为绝对 URL 再请求，第二页正常取回。
+func TestFetchTags_RelativeNextCursorShouldResolveAgainstBase(t *testing.T) {
+	noSleep(t)
+	page2Hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			page2Hit = true
+			json.NewEncoder(w).Encode(paginatedTags{Results: []tagResult{{Name: "v2"}}})
+			return
+		}
+		json.NewEncoder(w).Encode(paginatedTags{
+			Next:    "/v2/repositories/library/nginx/tags/?page=2", // 相对路径
+			Results: []tagResult{{Name: "v1"}},
+		})
+	}))
+	defer srv.Close()
+
+	tags, err := FetchTags(srv.Client(), srv.URL, "library", "nginx", 0, false)
+	if err != nil {
+		t.Fatalf("relative next cursor should be resolved against base, got error: %v", err)
+	}
+	if len(tags) != 2 || tags[0].Name != "v1" || tags[1].Name != "v2" {
+		t.Errorf("tags = %+v, want [v1 v2]", tags)
+	}
+	if !page2Hit {
+		t.Error("second page was never requested")
+	}
+}
+
+// TestFetchTags_NextCursorOutsideBaseMustBeRejected 【绿·钉修复】(审查结论 1b)
+// 修复前：next 为指向外部 host 的绝对 URL 时，client 原样请求，第二页流量打到
+// base 之外。修复后 resolveNext 拒绝越出配置 base 的游标（报错且不发起请求）。
+func TestFetchTags_NextCursorOutsideBaseMustBeRejected(t *testing.T) {
+	noSleep(t)
+	externalHits := 0
+	external := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		externalHits++
+		json.NewEncoder(w).Encode(paginatedTags{Results: []tagResult{{Name: "evil"}}})
+	}))
+	defer external.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(paginatedTags{
+			Next:    external.URL + "/v2/repositories/library/nginx/tags/?page=2",
+			Results: []tagResult{{Name: "v1"}},
+		})
+	}))
+	defer srv.Close()
+
+	_, err := FetchTags(srv.Client(), srv.URL, "library", "nginx", 0, false)
+	if err == nil {
+		t.Error("next cursor pointing outside the configured base must be rejected, got nil error")
+	}
+	if externalHits != 0 {
+		t.Errorf("request leaked to host outside base: external hit %d time(s)", externalHits)
+	}
+}
+
+// TestFetchTags_ImageNameWithHashMustBePathEscaped 【绿·钉修复】(审查结论 3)
+// 修复前：user/image 用 fmt.Sprintf 直接拼进路径，未做 url.PathEscape。
+// image="a#b" 时 "#" 后面全部变成 URL fragment，mock 只收到路径
+// /v2/repositories/library/a，page_size 参数也随之丢失。修复后 '#' 以 %23 传输。
+func TestFetchTags_ImageNameWithHashMustBePathEscaped(t *testing.T) {
+	var gotPath, gotPageSize string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		gotPageSize = r.URL.Query().Get("page_size")
+		json.NewEncoder(w).Encode(paginatedTags{Results: []tagResult{}})
+	}))
+	defer srv.Close()
+
+	if _, err := FetchTags(srv.Client(), srv.URL, "library", "a#b", 10, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "/v2/repositories/library/a%23b/tags/"; gotPath != want {
+		t.Errorf("path = %q, want %q (image name must be PathEscape-d)", gotPath, want)
+	}
+	if gotPageSize != "100" {
+		t.Errorf("page_size = %q, want 100 (unescaped '#' turns the rest of the URL into a fragment)", gotPageSize)
+	}
+}
+
+// TestFetchTags_HTTPErrorShouldIncludeURL 【绿·钉修复】(审查结论 6)
+// 修复前：非 2xx 错误消息 "docker hub tags returned HTTP %d" 不含出错 URL，
+// 定位不了是哪个 base/镜像源出错。修复后错误里带 URL（经 redactURL 脱敏，
+// 密码不外泄，见 TestFetchTags_HTTPErrorRedactsUserinfoPassword）。
+func TestFetchTags_HTTPErrorShouldIncludeURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+	_, err := FetchTags(srv.Client(), srv.URL, "u", "i", 10, false)
+	if err == nil {
+		t.Fatal("expected error for 502, got nil")
+	}
+	if !strings.Contains(err.Error(), srv.URL) {
+		t.Errorf("error %q should contain the failing URL %q", err, srv.URL)
+	}
+}
+
+// TestFetchTags_LoopingNextMustBeDetected 【绿·钉现状】(审查结论 2)
+// 分页环保护：next 恒指回同一页时，盲跟游标会无限循环（--all/limit=0 直接
+// 挂死；limit=3 也只是碰巧提前退出）。现在维护已访问 URL 集合，next 指向
+// 已请求过的 URL 即报错。本测试 mock 的 next 恒为 ...?page=1：首页
+// （?page_size=100）请求 1 次，随后 next 指向的 ?page=1 请求 1 次（第 2 次），
+// 其 next 再次指回 ?page=1 => 环检测报错，共 2 次请求（首页+重访被拒）。
+func TestFetchTags_LoopingNextMustBeDetected(t *testing.T) {
+	noSleep(t)
+	calls := 0
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode(paginatedTags{
+			Next:    srv.URL + "/v2/repositories/library/nginx/tags/?page=1", // 恒指回第 1 页
+			Results: []tagResult{{Name: "latest"}},
+		})
+	}))
+	defer srv.Close()
+
+	_, err := FetchTags(srv.Client(), srv.URL, "library", "nginx", 3, false)
+	if err == nil {
+		t.Fatal("looping next cursor must be detected and rejected, got nil error")
+	}
+	if !strings.Contains(err.Error(), "loop") {
+		t.Errorf("err = %v, want loop detection error", err)
+	}
+	if calls != 2 {
+		t.Errorf("got %d requests, want 2 (first page + revisit rejected by loop detection)", calls)
+	}
+}
+
+// TestFetchTags_NextNonEmptyButEmptyResultsContinues 【绿】(审查结论 7 边界)
+// 第 1 页 results 为空但 next 非空：应继续跟游标取第 2 页，最终拿到第 2 页的
+// tag，共 2 次请求，不报错、不死循环（第 2 页 next 为空终止）。
+func TestFetchTags_NextNonEmptyButEmptyResultsContinues(t *testing.T) {
+	noSleep(t)
+	calls := 0
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			json.NewEncoder(w).Encode(paginatedTags{
+				Count:   1,
+				Next:    srv.URL + "/v2/repositories/library/nginx/tags/?page=2",
+				Results: []tagResult{},
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(paginatedTags{Results: []tagResult{{Name: "v2"}}})
+	}))
+	defer srv.Close()
+
+	tags, err := FetchTags(srv.Client(), srv.URL, "library", "nginx", 0, false)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(tags) != 1 || tags[0].Name != "v2" {
+		t.Errorf("tags = %+v, want [v2]", tags)
+	}
+	if calls != 2 {
+		t.Errorf("got %d requests, want 2", calls)
+	}
+}
+
+// TestFetchTags_LimitExactPageSizeMultipleStopsAtBoundary 【绿】(审查结论 7 边界)
+// limit 恰好等于页大小（100，page_size 的整数倍）：第 1 页收满 100 个后
+// len(out)>=limit 即停，不再请求第 2 页（恰好卡满边界，不多取一页）。
+func TestFetchTags_LimitExactPageSizeMultipleStopsAtBoundary(t *testing.T) {
+	noSleep(t)
+	calls := 0
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		results := make([]tagResult, 100)
+		for i := range results {
+			results[i] = tagResult{Name: fmt.Sprintf("t%03d", i)}
+		}
+		json.NewEncoder(w).Encode(paginatedTags{
+			Next:    srv.URL + "/v2/repositories/library/nginx/tags/?page=2",
+			Results: results,
+		})
+	}))
+	defer srv.Close()
+
+	tags, err := FetchTags(srv.Client(), srv.URL, "library", "nginx", 100, false)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(tags) != 100 {
+		t.Errorf("got %d tags, want exactly 100", len(tags))
+	}
+	if tags[99].Name != "t099" {
+		t.Errorf("tags[99] = %q, want t099", tags[99].Name)
+	}
+	if calls != 1 {
+		t.Errorf("got %d requests, want 1 (limit==page size must not fetch page 2)", calls)
+	}
+}
+
+// TestFetchTags_CrossPageDuplicateTagNamesAppended 【绿·钉现状】(审查结论 7 边界)
+// 跨页出现同名 tag（API 异常/镜像源脏数据）时直接 append，无去重：两页各一个
+// "latest" => 结果 2 条同名。钉住现状；若后续加去重需更新本测试。
+func TestFetchTags_CrossPageDuplicateTagNamesAppended(t *testing.T) {
+	noSleep(t)
+	calls := 0
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		pr := paginatedTags{Results: []tagResult{{Name: "latest"}}}
+		if calls == 1 {
+			pr.Next = srv.URL + "/v2/repositories/library/nginx/tags/?page=2"
+		}
+		json.NewEncoder(w).Encode(pr)
+	}))
+	defer srv.Close()
+
+	tags, err := FetchTags(srv.Client(), srv.URL, "library", "nginx", 0, false)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(tags) != 2 {
+		t.Fatalf("got %d tags, want 2 (no dedup across pages)", len(tags))
+	}
+	if tags[0].Name != "latest" || tags[1].Name != "latest" {
+		t.Errorf("tags = [%s %s], want [latest latest] (blind append)", tags[0].Name, tags[1].Name)
+	}
+}
+
+// TestFetchTags_TruncatedBodyReturnsReadError 【绿】(审查结论 7 边界：unexpected EOF 路径)
+// 响应头 Content-Length 大于实际 body：服务端提前断开，io.ReadAll 读到
+// unexpected EOF，走 "reading tags response" 错误分支（而非解析错误）。
+func TestFetchTags_TruncatedBodyReturnsReadError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := []byte(`{"count":1,"next":"","results":[{"name":"v1"}]}`)
+		// 声明的长度比实际写入多 64 字节，响应被截断。
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)+64))
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	_, err := FetchTags(srv.Client(), srv.URL, "u", "i", 10, false)
+	if err == nil || !strings.Contains(err.Error(), "reading tags response") {
+		t.Errorf("err = %v, want 'reading tags response' error (unexpected EOF from truncated body)", err)
+	}
+}
+
+// --- 追加：第二轮安全审查（resolveNext 加固）的钉测试 ---
+
+// hostOf 提取 httptest 服务器 URL 的 host（含端口），用于构造异 scheme /
+// 协议相对 / 带 userinfo 的 next 游标。
+func hostOf(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return u.Host
+}
+
+// TestResolveNext_CursorMustMatchBaseSchemeHostUserinfo 【绿·钉修复】
+// resolveNext 行为矩阵（单元级）：游标先对 base 解析为绝对 URL，再统一校验
+// scheme/host/userinfo 与 base 完全一致。修复前协议相对 URL（//evil/...）因
+// Scheme=="" 走 ResolveReference 分支被放行、http 游标对 https base 因只比
+// Host 也被放行、userinfo 从不检查——三条均已堵死。
+func TestResolveNext_CursorMustMatchBaseSchemeHostUserinfo(t *testing.T) {
+	const base = "https://hub.example.com"
+	cases := []struct {
+		name string
+		next string
+		want string // 期望解析结果；"" 表示期望拒绝
+	}{
+		{"relative path resolves against base", "/v2/repositories/library/nginx/tags/?page=2", base + "/v2/repositories/library/nginx/tags/?page=2"},
+		{"same-host same-scheme absolute passes", base + "/v2/x/?page=3", base + "/v2/x/?page=3"},
+		{"protocol-relative foreign host rejected", "//evil.example.com/v2/x/?page=2", ""},
+		{"scheme downgrade http rejected", "http://hub.example.com/v2/x/?page=2", ""},
+		{"userinfo injected rejected", "https://evil@hub.example.com/v2/x/?page=2", ""},
+		{"userinfo with password rejected", "https://u:p@hub.example.com/v2/x/?page=2", ""},
+		{"foreign host rejected", "https://evil.example.com/v2/x/?page=2", ""},
+		{"malformed control character rejected", "/v2/x\u0007y?next=1", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveNext(base, tc.next)
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("resolveNext(base, %q) = %q, want rejection error", tc.next, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveNext(base, %q) error: %v", tc.next, err)
+			}
+			if got != tc.want {
+				t.Errorf("resolveNext(base, %q) = %q, want %q", tc.next, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFetchTags_ProtocolRelativeNextCursorMustBeRejected 【绿·钉修复】
+// 修复前：next="//evil.example.com/v2/x" 时 url.Parse 得 Scheme==""、Host!=""
+// 走 ResolveReference 分支，返回 https://evil.example.com/... 且 err=nil——
+// 恰好是 resolveNext 注释声称防御的恶意镜像场景。修复后 ResolveReference 的
+// 结果同样过 scheme/host 校验，协议相对游标指向 base 之外即拒绝且零外泄。
+func TestFetchTags_ProtocolRelativeNextCursorMustBeRejected(t *testing.T) {
+	noSleep(t)
+	externalHits := 0
+	external := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		externalHits++
+		json.NewEncoder(w).Encode(paginatedTags{Results: []tagResult{{Name: "evil"}}})
+	}))
+	defer external.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(paginatedTags{
+			Next:    "//" + hostOf(t, external.URL) + "/v2/repositories/library/nginx/tags/?page=2", // 协议相对 URL
+			Results: []tagResult{{Name: "v1"}},
+		})
+	}))
+	defer srv.Close()
+
+	_, err := FetchTags(srv.Client(), srv.URL, "library", "nginx", 0, false)
+	if err == nil {
+		t.Fatal("protocol-relative next cursor pointing outside base must be rejected, got nil error")
+	}
+	if externalHits != 0 {
+		t.Errorf("request leaked to host outside base: external hit %d time(s)", externalHits)
+	}
+}
+
+// TestFetchTags_NextCursorSchemeMismatchMustBeRejected 【绿·钉修复】
+// 修复前只比 Host 不比 Scheme：http://hub.docker.com/... 游标对 https base
+// 放行（降级为明文请求）。修复后 scheme 必须与 base 一致，异 scheme 游标
+// 在发起请求前即被拒绝。
+func TestFetchTags_NextCursorSchemeMismatchMustBeRejected(t *testing.T) {
+	noSleep(t)
+	calls := 0
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode(paginatedTags{
+			Next:    "https://" + hostOf(t, srv.URL) + "/v2/repositories/library/nginx/tags/?page=2", // base 是 http，游标是 https
+			Results: []tagResult{{Name: "v1"}},
+		})
+	}))
+	defer srv.Close()
+
+	_, err := FetchTags(srv.Client(), srv.URL, "library", "nginx", 0, false)
+	if err == nil || !strings.Contains(err.Error(), "refusing to follow") {
+		t.Fatalf("err = %v, want scheme-mismatch rejection error", err)
+	}
+	if calls != 1 {
+		t.Errorf("got %d requests, want 1 (downgraded cursor must be rejected before any request)", calls)
+	}
+}
+
+// TestFetchTags_NextCursorWithUserinfoMustBeRejected 【绿·钉修复】
+// 修复前 userinfo 从不校验：https://evil@hub.docker.com/... 游标放行。
+// 修复后游标解析结果携带与 base 不同的 userinfo 即拒绝（本例 scheme 与 host
+// 均与 base 一致，只有 userinfo 异，钉住 userinfo 规则本身）。
+func TestFetchTags_NextCursorWithUserinfoMustBeRejected(t *testing.T) {
+	noSleep(t)
+	calls := 0
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode(paginatedTags{
+			Next:    "http://evil@" + hostOf(t, srv.URL) + "/v2/repositories/library/nginx/tags/?page=2", // 同 scheme 同 host，仅多 userinfo
+			Results: []tagResult{{Name: "v1"}},
+		})
+	}))
+	defer srv.Close()
+
+	_, err := FetchTags(srv.Client(), srv.URL, "library", "nginx", 0, false)
+	if err == nil || !strings.Contains(err.Error(), "refusing to follow") {
+		t.Fatalf("err = %v, want userinfo rejection error", err)
+	}
+	if calls != 1 {
+		t.Errorf("got %d requests, want 1 (userinfo cursor must be rejected before any request)", calls)
+	}
+}
+
+// TestFetchTags_PaginationExceedsMaxPages 【绿·钉修复】
+// 修复前环保护只防"精确重复 URL"：镜像源每页返回唯一新游标时永不重复、
+// 无限翻页且 visited 无界增长。修复后 maxPages（默认 1000，测试可改小）为
+// 页数硬上限，超限报错并停止请求。本测试把 maxPages 压到 3。
+func TestFetchTags_PaginationExceedsMaxPages(t *testing.T) {
+	noSleep(t)
+	prev := maxPages
+	maxPages = 3
+	t.Cleanup(func() { maxPages = prev })
+
+	page := 0
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		// 每页返回唯一的 next 游标，visited 环检测永远不会命中。
+		json.NewEncoder(w).Encode(paginatedTags{
+			Next:    fmt.Sprintf("%s/v2/repositories/library/nginx/tags/?page=%d", srv.URL, page+1),
+			Results: []tagResult{{Name: fmt.Sprintf("v%d", page)}},
+		})
+	}))
+	defer srv.Close()
+
+	_, err := FetchTags(srv.Client(), srv.URL, "library", "nginx", 0, false)
+	if err == nil || !strings.Contains(err.Error(), "tags pagination exceeded 3 pages") {
+		t.Fatalf("err = %v, want 'tags pagination exceeded 3 pages' error", err)
+	}
+	if page != 3 {
+		t.Errorf("got %d requests, want exactly 3 (cap reached, 4th page must not be fetched)", page)
+	}
+}
+
+// TestFetchTags_MalformedNextCursorRejected 【绿·钉修复】
+// next 游标含控制字符（JSON \u0007 转义携带，镜像源可控）时 url.Parse 报
+// "invalid control character in URL"，resolveNext 返回解析错误且不请求。
+func TestFetchTags_MalformedNextCursorRejected(t *testing.T) {
+	noSleep(t)
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode(paginatedTags{
+			Next:    "/v2/repositories/library/nginx/tags/?page=2\u0007", // \u0007 => BEL 控制字符
+			Results: []tagResult{{Name: "v1"}},
+		})
+	}))
+	defer srv.Close()
+
+	_, err := FetchTags(srv.Client(), srv.URL, "library", "nginx", 0, false)
+	if err == nil || !strings.Contains(err.Error(), "parsing tags next cursor") {
+		t.Fatalf("err = %v, want 'parsing tags next cursor' error", err)
+	}
+	if calls != 1 {
+		t.Errorf("got %d requests, want 1 (malformed cursor must fail before the second request)", calls)
+	}
+}
+
+// TestFetchTags_HTTPErrorRedactsUserinfoPassword 【绿·钉修复】
+// 修复前非 2xx 错误消息用 %s 原样打印 URL：base 含 userinfo（如
+// DHS_API_BASE=https://user:pass@mirror）时密码直接泄漏到终端。修复后所有
+// 打印 URL 的错误统一走 redactURL（u.Redacted()），密码被 xxxx 掩码。
+func TestFetchTags_HTTPErrorRedactsUserinfoPassword(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	base := "http://mirror:supersecret@" + hostOf(t, srv.URL)
+	_, err := FetchTags(srv.Client(), base, "u", "i", 10, false)
+	if err == nil {
+		t.Fatal("expected error for 502, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 502") {
+		t.Errorf("err = %v, want HTTP 502 error", err)
+	}
+	if strings.Contains(err.Error(), "supersecret") {
+		t.Errorf("error %q must not leak the URL password in plaintext", err)
+	}
+	if !strings.Contains(err.Error(), "mirror:xxxxx@") {
+		t.Errorf("error %q should contain the redacted URL (mirror:xxxxx@...)", err)
 	}
 }

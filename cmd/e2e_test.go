@@ -49,6 +49,49 @@ func captureStdout(t *testing.T, fn func()) string {
 	return <-done
 }
 
+// captureStderr is the stderr counterpart of captureStdout. Cobra writes both
+// the "Error: ..." line and any usage dump to stderr (OutOrStderr defaults to
+// os.Stderr when SetOut is not used), so SilenceUsage behavior is asserted here.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = old }()
+
+	done := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r)
+		done <- string(data)
+	}()
+
+	fn()
+
+	w.Close()
+	return <-done
+}
+
+// runCLIStderr executes the cobra root command with the given args and returns
+// what was printed to stderr plus the command error (for asserting what the
+// user actually sees on the error channel).
+func runCLIStderr(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	resetFlags()
+	rootCmd.SetArgs(args)
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		resetFlags()
+		ui.SetEnabled(false) // restore the non-TTY default
+	})
+
+	var execErr error
+	stderr := captureStderr(t, func() { execErr = rootCmd.Execute() })
+	return stderr, execErr
+}
+
 // runCLI executes the cobra root command in-process with the given args and
 // returns everything printed to stdout plus the command error.
 func runCLI(t *testing.T, args ...string) (string, error) {
@@ -231,6 +274,35 @@ func TestE2E_ConfigBadYAMLFileFails(t *testing.T) {
 	}
 }
 
+// TestE2E_DefaultConfigPathRoundTrip drops --config entirely: the CLI must
+// resolve the platform default (os.UserConfigDir()/dhs/config.yaml) and round
+// trip a value through it. APPDATA drives os.UserConfigDir on Windows,
+// XDG_CONFIG_HOME on Linux — both are pointed at the same temp dir so the
+// test works on either platform.
+func TestE2E_DefaultConfigPathRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("APPDATA", dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	def := filepath.Join(dir, "dhs", "config.yaml")
+
+	out, err := runCLI(t, "config", "set", "proxy", "http://default-path:8080")
+	if err != nil {
+		t.Fatalf("set via default path: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, def) {
+		t.Errorf("set should report the default config path %q:\n%s", def, out)
+	}
+	data, rerr := os.ReadFile(def)
+	if rerr != nil || !strings.Contains(string(data), "http://default-path:8080") {
+		t.Errorf("default config file not written (read err %v):\n%s", rerr, data)
+	}
+
+	out, err = runCLI(t, "config", "get", "proxy")
+	if err != nil || !strings.Contains(out, "http://default-path:8080") {
+		t.Errorf("get via default path = (%q, %v)", out, err)
+	}
+}
+
 func TestE2E_ArgumentCountErrors(t *testing.T) {
 	cases := [][]string{
 		{"search"},
@@ -245,6 +317,62 @@ func TestE2E_ArgumentCountErrors(t *testing.T) {
 		if _, err := runCLI(t, args...); err == nil {
 			t.Errorf("%v: expected an argument/unknown-command error", args)
 		}
+	}
+}
+
+// TestE2E_RuntimeErrorNoUsageDump pins rootCmd.SilenceUsage: a RunE runtime
+// error (HTTP 429) must print only the "Error: ..." line to stderr — the
+// whole usage dump that used to follow it is suppressed, so the real error
+// is no longer buried in flag noise.
+func TestE2E_RuntimeErrorNoUsageDump(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	t.Setenv("DHS_API_BASE", srv.URL)
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
+
+	stderr, err := runCLIStderr(t, "search", "nginx", "--config", newTempConfig(t))
+	if err == nil || !strings.Contains(err.Error(), "HTTP 429") {
+		t.Fatalf("err = %v, want HTTP 429", err)
+	}
+	if strings.Contains(stderr, "Usage:") {
+		t.Errorf("runtime error must not dump usage after the Error line, stderr:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "Error:") || !strings.Contains(stderr, "HTTP 429") {
+		t.Errorf("stderr should keep the concise Error line, got:\n%s", stderr)
+	}
+}
+
+// TestE2E_FlagErrorStillExplainsItself pins the flag-error side of
+// SilenceUsage, verified experimentally against cobra v1.10.2: the usage dump
+// is suppressed for flag parse errors as well (cobra checks SilenceUsage
+// uniformly in ExecuteC for every error coming out of execute(), including
+// FlagErrorFunc-wrapped ones). The "Error:" message itself remains
+// self-descriptive, so the user still learns exactly what is wrong.
+func TestE2E_FlagErrorStillExplainsItself(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"bad flag value", []string{"tags", "nginx", "--limit", "abc"}, `invalid argument "abc" for "-n, --limit"`},
+		{"unknown flag", []string{"search", "nginx", "--nope"}, "unknown flag: --nope"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stderr, err := runCLIStderr(t, tc.args...)
+			if err == nil {
+				t.Fatalf("%v: expected a flag error", tc.args)
+			}
+			if strings.Contains(stderr, "Usage:") {
+				t.Errorf("flag error must not dump usage under SilenceUsage, stderr:\n%s", stderr)
+			}
+			if !strings.Contains(stderr, "Error:") || !strings.Contains(stderr, tc.want) {
+				t.Errorf("stderr = %q, want an Error line containing %q", stderr, tc.want)
+			}
+		})
 	}
 }
 
@@ -320,6 +448,50 @@ func TestE2E_SearchNonPositiveLimitDefaultsTo25(t *testing.T) {
 	}
 }
 
+// TestE2E_SearchNegativeLimitDefaultsTo25 pins that a negative --limit behaves
+// exactly like 0: both fall through the <=0 guard and downgrade to 25.
+func TestE2E_SearchNegativeLimitDefaultsTo25(t *testing.T) {
+	captured := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.URL.RawQuery
+		w.Write([]byte(fixture(t, "search_nginx.json")))
+	}))
+	defer srv.Close()
+	t.Setenv("DHS_API_BASE", srv.URL)
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
+
+	out, err := runCLI(t, "search", "nginx", "--limit", "-5", "--config", newTempConfig(t))
+	if err != nil {
+		t.Fatalf("err: %v\n%s", err, out)
+	}
+	if !strings.Contains(captured, "page_size=25") {
+		t.Errorf("query = %q, want negative limit to fall back to page_size=25", captured)
+	}
+}
+
+// TestE2E_SearchLargeLimitPassedThrough green-pins that a large --limit is
+// sent verbatim as page_size (no clamping client-side).
+func TestE2E_SearchLargeLimitPassedThrough(t *testing.T) {
+	captured := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.URL.RawQuery
+		w.Write([]byte(fixture(t, "search_nginx.json")))
+	}))
+	defer srv.Close()
+	t.Setenv("DHS_API_BASE", srv.URL)
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
+
+	out, err := runCLI(t, "search", "nginx", "--limit", "500", "--config", newTempConfig(t))
+	if err != nil {
+		t.Fatalf("err: %v\n%s", err, out)
+	}
+	if !strings.Contains(captured, "page_size=500") {
+		t.Errorf("query = %q, want page_size=500 passed through", captured)
+	}
+}
+
 func TestE2E_SearchHTTPErrorPropagates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -340,8 +512,26 @@ func TestE2E_SearchUnreachableProxyIsAnnotated(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected proxy dial failure, out:\n%s", out)
 	}
+	// No userinfo in this URL, so the Redacted pass leaves it unchanged
+	// (verified by running: http://127.0.0.1:1 prints verbatim).
 	if !strings.Contains(err.Error(), "当前代理: http://127.0.0.1:1") {
 		t.Errorf("err = %v, want proxy annotation", err)
+	}
+}
+
+// TestE2E_SearchProxyCredentialsRedactedInError pins the e2e side of the
+// errWithProxy redaction: a proxy URL carrying userinfo must show up in the
+// error as user:xxxxx@host, never leaking the password.
+func TestE2E_SearchProxyCredentialsRedactedInError(t *testing.T) {
+	_, err := runCLI(t, "search", "nginx", "--proxy", "http://user:secret@127.0.0.1:1", "--config", newTempConfig(t))
+	if err == nil {
+		t.Fatal("expected proxy dial failure")
+	}
+	if !strings.Contains(err.Error(), "当前代理: http://user:xxxxx@127.0.0.1:1") {
+		t.Errorf("err = %v, want redacted proxy annotation user:xxxxx@127.0.0.1:1", err)
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Errorf("err = %v, proxy password must not leak into the error", err)
 	}
 }
 
@@ -349,6 +539,44 @@ func TestE2E_SearchInvalidProxyFlagFailsFast(t *testing.T) {
 	_, err := runCLI(t, "search", "nginx", "--proxy", "://bad", "--config", newTempConfig(t))
 	if err == nil || !strings.Contains(err.Error(), "invalid proxy URL") {
 		t.Errorf("err = %v, want invalid proxy URL", err)
+	}
+}
+
+// TestE2E_SearchBadJSONPropagatesParseError pins the search JSON failure
+// path: a 200 response with a non-JSON body must surface "parsing search
+// response" instead of a panic or silent success.
+func TestE2E_SearchBadJSONPropagatesParseError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("<html>502 from a misbehaving gateway</html>"))
+	}))
+	defer srv.Close()
+	t.Setenv("DHS_API_BASE", srv.URL)
+
+	_, err := runCLI(t, "search", "nginx", "--config", newTempConfig(t))
+	if err == nil || !strings.Contains(err.Error(), "parsing search response") {
+		t.Errorf("err = %v, want parsing search response", err)
+	}
+}
+
+// TestE2E_SearchEmptyResultsRendersEmptyTable green-pins the zero-hit shape:
+// the header row still prints and the footer reports 找到 0 个结果（共 0）.
+func TestE2E_SearchEmptyResultsRendersEmptyTable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"count": 0, "next": "", "results": []}`))
+	}))
+	defer srv.Close()
+	t.Setenv("DHS_API_BASE", srv.URL)
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
+
+	out, err := runCLI(t, "search", "no-such-image-xyz", "--config", newTempConfig(t))
+	if err != nil {
+		t.Fatalf("err: %v\n%s", err, out)
+	}
+	for _, want := range []string{"NAME", "STARS", "PULLS", "OFFICIAL", "找到 0 个结果（共 0）"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("empty search output missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -406,6 +634,54 @@ func TestE2E_TagsAllAndLimitHint(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("limited view missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestE2E_TagsAllPaginatesAcrossPages wires a two-page mock: page 1 reuses the
+// shared fixture with its next cursor rewritten to an absolute URL on the same
+// mock host pointing at page 2 (the shared fixture's next is empty = single
+// page). resolveNext validates absolute next cursors against the API base
+// host (same-host cursors are followed, cross-host ones are refused), so this
+// same-host cursor passes, and --all must accumulate 10 + 2 = 12 tags across
+// pages.
+func TestE2E_TagsAllPaginatesAcrossPages(t *testing.T) {
+	page1 := fixture(t, "tags_nginx_page1.json")
+	page2 := fixture(t, "tags_nginx_page2.json")
+	requests := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v2/repositories/library/nginx/tags/") {
+			requests++
+			if r.URL.Query().Get("page") == "2" {
+				w.Write([]byte(page2))
+				return
+			}
+			next := "http://" + r.Host + "/v2/repositories/library/nginx/tags/?page=2&page_size=100"
+			w.Write([]byte(strings.Replace(page1, `"next": ""`, `"next": "`+next+`"`, 1)))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"message": "not found"}`))
+	}))
+	defer srv.Close()
+	t.Setenv("DHS_API_BASE", srv.URL)
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
+
+	out, err := runCLI(t, "tags", "nginx", "--all", "--config", newTempConfig(t))
+	if err != nil {
+		t.Fatalf("err: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "找到 12 个标签") {
+		t.Errorf("--all must accumulate tags across both pages (want 12):\n%s", out)
+	}
+	for _, want := range []string{"\n1.25-alpine ", "\n1.25 "} {
+		if !strings.Contains(out, want) {
+			t.Errorf("page-2 row %q missing from accumulated output:\n%s", want, out)
+		}
+	}
+	if requests != 2 {
+		t.Errorf("tags endpoint hit %d times, want exactly 2 (page1 + page2)", requests)
 	}
 }
 
@@ -621,5 +897,49 @@ func TestE2E_TagsWithProxyConfigInFile(t *testing.T) {
 	_, err := runCLI(t, "tags", "nginx", "--config", path)
 	if err == nil || !strings.Contains(err.Error(), "当前代理: http://127.0.0.1:1") {
 		t.Errorf("err = %v, want file-configured proxy to be used", err)
+	}
+}
+
+// --- --no-color / NO_COLOR 颜色开关 e2e ---
+
+// TestE2E_SearchNoColorFlagStripsANSI pins that --no-color removes every ANSI
+// escape from search output (applyColorSetting -> SetEnabled(false)).
+func TestE2E_SearchNoColorFlagStripsANSI(t *testing.T) {
+	newMockHub(t)
+	out, err := runCLI(t, "search", "nginx", "--no-color", "--config", newTempConfig(t))
+	if err != nil {
+		t.Fatalf("err: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("--no-color must strip all ANSI escapes from search output:\n%q", out)
+	}
+}
+
+// TestE2E_TagsNoColorFlagStripsANSI is the tags counterpart, exercising the
+// colored header/footer/hint paths (cyan, green, yellow) under --no-color.
+func TestE2E_TagsNoColorFlagStripsANSI(t *testing.T) {
+	newMockHub(t)
+	out, err := runCLI(t, "tags", "nginx", "--all", "--gen-pull", "--no-color", "--config", newTempConfig(t))
+	if err != nil {
+		t.Fatalf("err: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("--no-color must strip all ANSI escapes from tags output:\n%q", out)
+	}
+}
+
+// TestE2E_SearchNoColorEnvDisablesANSI pins the NO_COLOR=1 contract:
+// no flag, no config file, only the environment variable. Color is
+// disabled through config.EffectiveNoColor's env layer plus fatih/color's
+// init-time detection; applyColorSetting no longer force-enables color.
+func TestE2E_SearchNoColorEnvDisablesANSI(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	newMockHub(t)
+	out, err := runCLI(t, "search", "nginx", "--config", newTempConfig(t))
+	if err != nil {
+		t.Fatalf("err: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("NO_COLOR=1 must suppress ANSI escapes even without --no-color:\n%q", out)
 	}
 }

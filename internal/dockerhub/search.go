@@ -26,7 +26,7 @@ func FetchRepositories(client *http.Client, base, keyword string, limit int) ([]
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, 0, fmt.Errorf("docker hub search returned HTTP %d", resp.StatusCode)
+		return nil, 0, fmt.Errorf("docker hub search returned HTTP %d for %s", resp.StatusCode, redactURL(u))
 	}
 
 	body, err := io.ReadAll(resp.Body)
