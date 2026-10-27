@@ -157,10 +157,12 @@ dhs tags python --filter slim --arch arm64 --gen-pull
 按顺序检查：
 1. `dhs config list` 看生效代理是否为 `-`（未配置）——是则按上文 `config set proxy` 配置。
 2. 已配置仍超时/被拒：多半是代理地址填错或代理挂了——和用户确认地址，不要自行换一个，并检查代理主机（`192.168.0.225:7897`）是否可达。
+3. 需要走兼容镜像站时，可设 `DHS_API_BASE` 覆盖 API 端点（默认 `https://hub.docker.com`，尾斜杠自动去除；镜像需把分页 `next` 游标重写为自身 host，跨 host 游标会被拒绝）。
+4. 输出要去色/管道场景：设 `NO_COLOR` 为非空值，或加 `--no-color`。
 
 ## 命令速查
 
-全局参数（放在子命令前）：`--proxy URL` / `-P`、`--config PATH`、`--no-color`。
+全局参数（放在子命令前）：`--proxy URL` / `-P`、`--config PATH`、`--no-color`（等价环境变量 `NO_COLOR`，非空即禁色）；环境变量 `DHS_API_BASE` 可把 API 指向兼容镜像站。
 
 | 子命令 | 说明 / 常用参数 |
 |---|---|

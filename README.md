@@ -112,6 +112,42 @@ proxy: "http://192.168.0.225:7897"
 no_color: false
 ```
 
+## 颜色控制
+
+dhs 遵循 [no-color.org](https://no-color.org) 约定，支持 `NO_COLOR` 环境变量：设置为**任意非空值**即禁用彩色输出（空值视为未设置）。是否禁色按以下优先级判定（高 → 低）：
+
+1. `--no-color` 命令行 flag
+2. 配置文件 `no-color` 字段（`dhs config set no-color true`）
+3. `NO_COLOR` 环境变量（非空即生效）
+4. 自动 TTY 检测（输出不是终端时自动禁色，可安全接管道/重定向）
+
+```bash
+NO_COLOR=1 dhs search nginx      # 单次禁色
+dhs config set no-color true     # 持久禁色
+```
+
+## 高级：环境变量
+
+| 变量 | 说明 |
+|------|------|
+| `HTTPS_PROXY` / `HTTP_PROXY` | 未配置代理时的回退代理（优先级见"代理配置"） |
+| `NO_COLOR` | 非空即禁用彩色输出（见"颜色控制"） |
+| `DHS_API_BASE` | 覆盖 Docker Hub API 端点（兼容镜像站/自建反代） |
+
+### `DHS_API_BASE`：使用兼容镜像站
+
+默认端点为 `https://hub.docker.com`。设置 `DHS_API_BASE` 可将 API 请求指向实现了 Docker Hub v2 API 的镜像站，尾斜杠会自动去除：
+
+```bash
+export DHS_API_BASE=https://hub-mirror.example.com/
+dhs search nginx                 # 请求打到 hub-mirror.example.com
+```
+
+注意事项：
+
+- 镜像站需实现 `/v2/search/repositories/` 与 `/v2/repositories/{user}/{image}/tags/` 等 Docker Hub v2 接口。
+- **分页游标必须留在同一 host**：`dhs tags --all` 翻页时，API 响应里的 `next` 游标若指向其他 host（例如镜像站直接透传了 `hub.docker.com` 的绝对 `next` 地址）会被拒绝，以保证请求不外泄到配置的端点之外。镜像站需要把 `next` 重写为指向自身。
+
 ## 命令参考
 
 ### 全局 flag
@@ -120,7 +156,7 @@ no_color: false
 |------|------|
 | `-P, --proxy` | 代理地址，如 `http://host:port` |
 | `--config` | 配置文件路径（默认走平台标准目录） |
-| `--no-color` | 关闭彩色输出 |
+| `--no-color` | 关闭彩色输出（也可用 `NO_COLOR` 环境变量或配置项，见"颜色控制"） |
 
 ### `dhs config`
 
